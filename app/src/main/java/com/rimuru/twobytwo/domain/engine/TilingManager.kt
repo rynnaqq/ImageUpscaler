@@ -3,10 +3,11 @@ package com.rimuru.twobytwo.domain.engine
 /**
  * Tile grid + seam blending math. Pure Kotlin, unit-testable, no Android imports (PRD §5.4).
  *
- * Pipeline contract: an image of W×H is processed in overlapping tiles. Each tile
- * is upscaled by [scale]; only the tile's "core" (non-overlapped) region is written
- * unblended into the output; overlap zones get a cosine-ramp feathered blend so
- * seams are invisible.
+ * Design invariant: the image is partitioned into "core" regions — one per tile —
+ * that exactly tile [0, W) × [0, H) with no gaps or overlaps. Each tile also owns
+ * ramp (feather) regions inside its footprint where its contribution is weighted
+ * by a cosine ramp; a ramp region always coincides with a neighbor's core, so the
+ * neighbor's full-weight write wins and seams vanish.
  */
 class TilingManager(
     private val imageWidth: Int,
@@ -23,11 +24,13 @@ class TilingManager(
     val outWidth: Int = imageWidth * scale
     val outHeight: Int = imageHeight * scale
 
+    private val halfOverlap: Int = overlap / 2
+
     /** Stride between tile origins in input space. */
     val stride: Int = tileSize - overlap
 
-    val tilesX: Int = 1 + ceilDiv(imageWidth - overlap, stride)
-    val tilesY: Int = 1 + ceilDiv(imageHeight - overlap, stride)
+    val tilesX: Int = ceilDiv(imageWidth - halfOverlap, stride).coerceAtLeast(1)
+    val tilesY: Int = ceilDiv(imageHeight - halfOverlap, stride).coerceAtLeast(1)
     val tileCount: Int = tilesX * tilesY
 
     data class Tile(
@@ -36,46 +39,52 @@ class TilingManager(
         val inY: Int,
         val inW: Int,
         val inH: Int,
-        /** Core (unblended) region in output space — this tile owns these pixels. */
+        /** Core (full-weight) region in output space — this tile owns these pixels. */
         val coreOutX: Int,
         val coreOutY: Int,
         val coreW: Int,
         val coreH: Int,
-        /** Where this tile's origin sits in input space relative to the grid. */
         val col: Int,
         val row: Int,
+        /** Feather ramp widths in output pixels; 0 = no ramp on that side. */
+        val leftRampOut: Int,
+        val rightRampOut: Int,
+        val topRampOut: Int,
+        val bottomRampOut: Int,
     )
 
     fun tiles(): List<Tile> {
         val result = ArrayList<Tile>(tileCount)
         for (row in 0 until tilesY) {
             for (col in 0 until tilesX) {
-                val inX = (col * stride).coerceAtMost(imageWidth - 1)
-                val inY = (row * stride).coerceAtMost(imageHeight - 1)
+                // Core boundaries in absolute input space — exact partition
+                val coreInStartX = if (col == 0) 0 else col * stride + halfOverlap
+                val coreInEndX = if (col == tilesX - 1) imageWidth else (col + 1) * stride + halfOverlap
+                val coreInStartY = if (row == 0) 0 else row * stride + halfOverlap
+                val coreInEndY = if (row == tilesY - 1) imageHeight else (row + 1) * stride + halfOverlap
+
+                // Tile origin: nominal grid position, pulled back so the tile still
+                // covers its core when the grid runs past the image edge.
+                val inX = minOf(col * stride, imageWidth - tileSize).coerceAtLeast(0)
+                val inY = minOf(row * stride, imageHeight - tileSize).coerceAtLeast(0)
                 val inW = minOf(tileSize, imageWidth - inX)
                 val inH = minOf(tileSize, imageHeight - inY)
-
-                // Core region: the part of this tile not overlapped by a neighbor on
-                // the left/top, and not extending past the image on right/bottom.
-                val coreInX = if (col == 0) 0 else overlap / 2
-                val coreInY = if (row == 0) 0 else overlap / 2
-                val coreInRight = if (col == tilesX - 1) inW else inW - overlap / 2
-                val coreInBottom = if (row == tilesY - 1) inH else inH - overlap / 2
-
-                val coreW = (coreInRight - coreInX).coerceAtLeast(1)
-                val coreH = (coreInBottom - coreInY).coerceAtLeast(1)
 
                 result += Tile(
                     inX = inX,
                     inY = inY,
                     inW = inW,
                     inH = inH,
-                    coreOutX = (inX + coreInX) * scale,
-                    coreOutY = (inY + coreInY) * scale,
-                    coreW = coreW * scale,
-                    coreH = coreH * scale,
+                    coreOutX = coreInStartX * scale,
+                    coreOutY = coreInStartY * scale,
+                    coreW = (coreInEndX - coreInStartX) * scale,
+                    coreH = (coreInEndY - coreInStartY) * scale,
                     col = col,
                     row = row,
+                    leftRampOut = (coreInStartX - inX) * scale,
+                    rightRampOut = (inX + inW - coreInEndX) * scale,
+                    topRampOut = (coreInStartY - inY) * scale,
+                    bottomRampOut = (inY + inH - coreInEndY) * scale,
                 )
             }
         }
@@ -83,35 +92,32 @@ class TilingManager(
     }
 
     /**
-     * Feather weight for output pixel (outX, outY) within a tile placed at
-     * (inX, inY) with dims (inW, inH): 1.0 in the interior, cosine-ramped to ~0
-     * across [overlap] px inside each overlapped edge. Edge-of-image sides get 1.0
-     * (no neighbor to blend with, PRD §5.4 step 5 anti-halo).
+     * Feather weight for output pixel (outX, outY) within [tile]: 1.0 in the core,
+     * cosine-ramped to ~0 across each ramp region. Image-edge sides have no ramp
+     * (no neighbor to blend with — PRD §5.4 step 5 anti-halo).
      */
     fun featherWeight(
         outX: Int,
         outY: Int,
         tile: Tile,
     ): Float {
-        val localOutX = outX - tile.inX * scale // position within tile output
-        val localOutY = outY - tile.inY * scale
+        val localX = outX - tile.inX * scale
+        val localY = outY - tile.inY * scale
         val tileOutW = tile.inW * scale
         val tileOutH = tile.inH * scale
-        val ramp = overlap * scale
 
-        val wx = rampX(localOutX, tileOutW, ramp, tile.col == 0, tile.col == tilesX - 1)
-        val wy = rampX(localOutY, tileOutH, ramp, tile.row == 0, tile.row == tilesY - 1)
-        return wx * wy
-    }
-
-    private fun rampX(local: Int, tileOut: Int, ramp: Int, isFirst: Boolean, isLast: Boolean): Float {
         var w = 1f
-        if (!isFirst && local < ramp) {
-            w *= cosineRamp(local.toFloat() / ramp)
+        if (tile.leftRampOut > 0 && localX < tile.leftRampOut) {
+            w *= cosineRamp(localX.toFloat() / tile.leftRampOut)
         }
-        if (!isLast && local > tileOut - ramp) {
-            val d = (tileOut - local).toFloat() / ramp
-            w *= cosineRamp(d)
+        if (tile.rightRampOut > 0 && localX > tileOutW - tile.rightRampOut) {
+            w *= cosineRamp((tileOutW - localX).toFloat() / tile.rightRampOut)
+        }
+        if (tile.topRampOut > 0 && localY < tile.topRampOut) {
+            w *= cosineRamp(localY.toFloat() / tile.topRampOut)
+        }
+        if (tile.bottomRampOut > 0 && localY > tileOutH - tile.bottomRampOut) {
+            w *= cosineRamp((tileOutH - localY).toFloat() / tile.bottomRampOut)
         }
         return w
     }
@@ -122,7 +128,7 @@ class TilingManager(
     }
 
     companion object {
-        fun ceilDiv(a: Int, b: Int): Int = (a + b - 1) / b
+        fun ceilDiv(a: Int, b: Int): Int = if (a <= 0) 0 else (a + b - 1) / b
 
         /** Pick tile size by device tier (PRD §6.1). */
         fun tileSizeForTier(totalRamMb: Long, hasVulkan: Boolean): Int =

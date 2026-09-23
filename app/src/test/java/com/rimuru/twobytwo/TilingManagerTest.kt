@@ -48,7 +48,6 @@ class TilingManagerTest {
     fun `feather weight is 1 in interior and ramps in overlap`() {
         val tiling = TilingManager(1000, 1000, 2, tileSize = 256, overlap = 32)
         val tiles = tiling.tiles()
-        val interior = tiles.first { t -> t.inX > 64 && t.inY > 64 } // has neighbors all around? pick any non-edge
         val nonEdge = tiles.firstOrNull { it.col > 0 && it.col < tiling.tilesX - 1 && it.row > 0 && it.row < tiling.tilesY - 1 }
 
         if (nonEdge != null) {
@@ -57,10 +56,19 @@ class TilingManagerTest {
             assertEquals(1f, tiling.featherWeight(coreCenterX, coreCenterY, nonEdge), 0.001f)
         }
 
-        // Image border (col 0, local x=0) must be weight 1 — no halo (PRD §5.4 step 5)
+        // Image-border sides of the corner tile must be weight 1 — no halo (PRD §5.4 step 5)
         val corner = tiles.first { it.col == 0 && it.row == 0 }
         assertEquals(1f, tiling.featherWeight(0, 0, corner), 0.001f)
-        assertEquals(1f, tiling.featherWeight(0, corner.inH * 2 - 1, corner), 0.001f)
+        // Left edge is image border (no left ramp); pick a y inside the core rows
+        val coreMidY = corner.coreOutY + corner.coreH / 2
+        assertEquals(1f, tiling.featherWeight(0, coreMidY, corner), 0.001f)
+
+        // But the tile's bottom edge ramps down (neighbors below) — must be < 1
+        val bottomY = corner.inY * 2 + corner.inH * 2 - 1
+        assertTrue(
+            "bottom edge should ramp, got ${tiling.featherWeight(corner.coreOutX + 10, bottomY, corner)}",
+            tiling.featherWeight(corner.coreOutX + 10, bottomY, corner) < 0.1f,
+        )
     }
 
     @Test
