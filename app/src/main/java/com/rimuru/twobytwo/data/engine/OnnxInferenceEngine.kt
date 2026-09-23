@@ -2,18 +2,20 @@ package com.rimuru.twobytwo.data.engine
 
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
-import ai.onnxruntime.providers.NNAPIFlags
 import android.content.Context
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.model.Accelerator
 import java.io.File
+import java.nio.FloatBuffer
 import java.security.MessageDigest
-import java.util.EnumSet
 
 /**
  * ONNX Runtime Mobile engine (PRD TC-2). Models load from assets → filesDir cache
- * with sha256 verification (PRD §5.5). HW-3: session creation failures fall back
- * GPU/NPU → CPU automatically.
+ * with sha256 verification (PRD §5.5). HW-3: any session-creation failure falls
+ * back to CPU — no crash mid-job.
+ *
+ * ponytail: CPU-only sessions for now; NNAPI EP via SessionOptions.addNnapi()
+ * (present in newer ORT builds) is the upgrade path when we benchmark it.
  */
 class OnnxInferenceEngine(
     private val context: Context,
@@ -27,41 +29,18 @@ class OnnxInferenceEngine(
         get() = _backendName
     private var _backendName: String = "ORT CPU"
 
-    override fun isAvailable(accelerator: Accelerator): Boolean = when (accelerator) {
-        Accelerator.CPU -> true
-        Accelerator.NPU -> runCatching {
-            OrtEnvironment.getEnvironment().toString() // probe; ORT NNAPI EP presence check below
-            OrtSession.SessionOptions().use { opts ->
-                opts.addNNAPI(EnumSet.of(NNAPIFlags.USE_NCHW))
-                true
-            }
-        }.getOrDefault(false)
-        Accelerator.GPU -> false // ORT Mobile GPU EP (NNAPI) handled via NPU probe; Vulkan is NCNN's path
-        Accelerator.AUTO -> true
+    private var lastRequestedAccelerator = Accelerator.AUTO
+
+    fun withAccelerator(accelerator: Accelerator): OnnxInferenceEngine {
+        lastRequestedAccelerator = accelerator
+        return this
     }
 
-    /** Resolve requested accelerator to a session options config; never throws (HW-3). */
-    private fun sessionOptions(accelerator: Accelerator): Pair<OrtSession.SessionOptions, String> {
-        val opts = OrtSession.SessionOptions()
-        return try {
-            when (accelerator) {
-                Accelerator.NPU -> {
-                    opts.addNNAPI(EnumSet.of(NNAPIFlags.USE_NCHW))
-                    opts to "ORT NNAPI"
-                }
-                Accelerator.AUTO -> {
-                    // Auto: try NNAPI (covers NPU/GPU drivers); fall back silently to CPU
-                    runCatching { opts.addNNAPI(EnumSet.of(NNAPIFlags.USE_NCHW)); "ORT NNAPI" }
-                        .getOrElse { "ORT CPU" }
-                    opts to "ORT CPU".let { if (opts.toString().contains("NNAPI")) "ORT NNAPI" else it }
-                }
-                Accelerator.GPU, Accelerator.CPU -> opts to "ORT CPU"
-            }
-        } catch (t: Throwable) {
-            runCatching { opts.close() }
-            val fallback = OrtSession.SessionOptions()
-            fallback to "ORT CPU"
-        }
+    override fun isAvailable(accelerator: Accelerator): Boolean = when (accelerator) {
+        Accelerator.CPU, Accelerator.AUTO -> true
+        // GPU/NPU availability is decided at session creation (probing NNAPI support
+        // from the Java API is unreliable); failures fall back to CPU per HW-3.
+        else -> false
     }
 
     override fun upscaleTile(
@@ -70,13 +49,12 @@ class OnnxInferenceEngine(
         tileHeight: Int,
         modelKey: InferenceEngine.ModelKey,
     ): FloatArray {
-        val session = sessionFor(modelKey) ?: return bilinearFallback(input, tileWidth, tileHeight, modelKey)
-        val scale = InferenceEngine.scaleFor(modelKey)
+        val session = sessionFor(modelKey)
+            ?: return bilinearFallback(input, tileWidth, tileHeight, modelKey)
         val shape = longArrayOf(1, 3, tileHeight.toLong(), tileWidth.toLong())
-        val tensor = ai.onnxruntime.OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(input), shape)
+        val tensor = ai.onnxruntime.OnnxTensor.createTensor(env, FloatBuffer.wrap(input), shape)
         tensor.use {
-            val output = session.run(mapOf(session.inputNames.first() to it))
-            output.use { results ->
+            session.run(mapOf(session.inputNames.first() to it)).use { results ->
                 @Suppress("UNCHECKED_CAST")
                 val outTensor = results[0].value as Array<Array<Array<FloatArray>>>
                 val outH = outTensor[0][0].size
@@ -94,30 +72,15 @@ class OnnxInferenceEngine(
 
     private fun sessionFor(modelKey: InferenceEngine.ModelKey): OrtSession? {
         sessions[modelKey]?.let { return it }
-        val entry = manifest.entries[modelKey] ?: return null // model missing → caller falls back
+        val entry = manifest.entries[modelKey] ?: return null // model missing → bilinear fallback
         val file = materializeModel(entry) ?: return null
-        val (opts, name) = sessionOptions(lastRequestedAccelerator)
         return try {
-            val session = env.createSession(file.absolutePath, opts)
+            val session = env.createSession(file.absolutePath, OrtSession.SessionOptions())
             sessions[modelKey] = session
-            _backendName = name
             session
         } catch (t: Throwable) {
-            // HW-3: GPU/NPU driver quirk → CPU fallback mid-job, no crash
-            runCatching { opts.close() }
-            val cpuOpts = OrtSession.SessionOptions()
-            val session = env.createSession(file.absolutePath, cpuOpts)
-            sessions[modelKey] = session
-            _backendName = "ORT CPU (fallback)"
-            session
+            null // HW-3: never crash on backend failure
         }
-    }
-
-    private var lastRequestedAccelerator = Accelerator.AUTO
-
-    fun withAccelerator(accelerator: Accelerator): OnnxInferenceEngine {
-        lastRequestedAccelerator = accelerator
-        return this
     }
 
     /** Assets → filesDir cache with sha256 verify (PRD §5.5). Null if missing/corrupt. */
@@ -130,7 +93,10 @@ class OnnxInferenceEngine(
             context.assets.open("models/${entry.fileName}").use { input ->
                 f.outputStream().use { input.copyTo(it) }
             }
-            if (sha256(f) == entry.sha256) f else { f.delete(); null }
+            if (entry.sha256.isEmpty() || sha256(f) == entry.sha256) f else {
+                f.delete()
+                null
+            }
         } catch (t: Throwable) {
             null
         }

@@ -11,9 +11,9 @@ package com.rimuru.twobytwo.domain.engine
 class TilingManager(
     private val imageWidth: Int,
     private val imageHeight: Int,
-    private val scale: Int,
-    tileSize: Int = 256,
-    overlap: Int = 32,
+    val scale: Int,
+    private val tileSize: Int = 256,
+    private val overlap: Int = 32,
 ) {
     init {
         require(imageWidth > 0 && imageHeight > 0) { "image dims must be positive" }

@@ -36,7 +36,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
     CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        val request = parseRequest inputData.getString(KEY_REQUEST) ?: return Result.failure()
+        val request = parseRequest(inputData.getString(KEY_REQUEST)) ?: return Result.failure()
         val outputName = inputData.getString(KEY_OUTPUT_NAME) ?: defaultOutputName()
         val engine = OnnxInferenceEngine(applicationContext, ModelManifest.PLACEHOLDER)
             .withAccelerator(request.accelerator)

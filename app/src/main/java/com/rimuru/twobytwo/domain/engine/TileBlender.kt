@@ -23,7 +23,7 @@ object TileBlender {
         outRgba: ByteArray,
         outW: Int,
     ) {
-        val scale = tiling.outWidth / tiling.imageWidth
+        val scale = tiling.scale
         val tileOutW = tile.inW * scale
         val tileOutH = tile.inH * scale
 

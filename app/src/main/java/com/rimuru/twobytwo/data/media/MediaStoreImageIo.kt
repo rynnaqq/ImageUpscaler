@@ -96,21 +96,25 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo {
         // Copy orientation + timestamps from the source photo (US-08)
         if (exifSourceUri != null) {
             try {
-                val srcExif: ExifInterface? = resolver.openInputStream(Uri.parse(exifSourceUri))!!.use { input ->
-                    // Source is already orientation-corrected at decode; strip rotation so
-                    // the exported file doesn't get double-rotated.
-                    ExifInterface(input).apply {
-                        setAttribute(ExifInterface.TAG_ORIENTATION, "1")
-                    }
+                // Source is already orientation-corrected at decode; strip rotation so
+                // the exported file doesn't get double-rotated.
+                val srcExif = resolver.openInputStream(Uri.parse(exifSourceUri))!!.use { input ->
+                    ExifInterface(input)
                 }
+                srcExif.setAttribute(ExifInterface.TAG_ORIENTATION, "1")
+
                 resolver.openOutputStream(outUri, "rw")!!.use { out ->
-                    srcExif?.saveAttributes()
-                    ExifInterface(out).apply {
-                        setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, srcExif?.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL))
-                        setAttribute(ExifInterface.TAG_MAKE, srcExif?.getAttribute(ExifInterface.TAG_MAKE))
-                        setAttribute(ExifInterface.TAG_MODEL, srcExif?.getAttribute(ExifInterface.TAG_MODEL))
-                        saveAttributes()
+                    val outExif = ExifInterface(out)
+                    val fields = listOf(
+                        ExifInterface.TAG_DATETIME_ORIGINAL,
+                        ExifInterface.TAG_MAKE,
+                        ExifInterface.TAG_MODEL,
+                    )
+                    for (tag in fields) {
+                        val value = srcExif.getAttribute(tag)
+                        if (value != null) outExif.setAttribute(tag, value)
                     }
+                    outExif.saveAttributes()
                 }
             } catch (_: Exception) {
                 // Metadata loss is non-fatal; image already saved.
