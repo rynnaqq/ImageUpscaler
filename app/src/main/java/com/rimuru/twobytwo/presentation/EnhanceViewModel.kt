@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
@@ -31,8 +32,8 @@ import java.util.UUID
 class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
 
     data class UiState(
-        // S1
-        val pickedUri: String? = null,
+        // S1 — batch: first uri drives preview, list drives the job
+        val pickedUris: List<String> = emptyList(),
         val pickedWidth: Int = 0,
         val pickedHeight: Int = 0,
         // S2 config
@@ -52,11 +53,12 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         val outputUri: String? = null,
         val error: String? = null,
     ) {
+        val previewUri: String? get() = pickedUris.firstOrNull()
         val isProcessing: Boolean get() = progress != null && progress.step != ProcessStep.DONE
     }
 
     sealed interface Intent {
-        data class PickPhoto(val uri: Uri) : Intent
+        data class PickPhotos(val uris: List<Uri>) : Intent
         data object ClearPhoto : Intent
         data class SetScale(val scale: ScaleFactor) : Intent
         data class SetMode(val mode: EngineMode) : Intent
@@ -74,10 +76,12 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onIntent(intent: Intent) {
         when (intent) {
-            is Intent.PickPhoto -> _state.update {
-                it.copy(pickedUri = intent.uri.toString(), error = null)
+            is Intent.PickPhotos -> _state.update {
+                if (intent.uris.isNotEmpty()) {
+                    it.copy(pickedUris = intent.uris.map(Uri::toString), error = null)
+                } else it
             }
-            Intent.ClearPhoto -> _state.update { it.copy(pickedUri = null, outputUri = null, progress = null) }
+            Intent.ClearPhoto -> _state.update { it.copy(pickedUris = emptyList(), outputUri = null, progress = null) }
             is Intent.SetScale -> _state.update { it.copy(scale = intent.scale) }
             is Intent.SetMode -> _state.update { it.copy(mode = intent.mode) }
             is Intent.SetDenoise -> _state.update { it.copy(denoise = intent.percent.coerceIn(0, 100)) }
@@ -92,7 +96,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun startJob() {
         val s = _state.value
-        val uri = s.pickedUri ?: return
+        if (s.pickedUris.isEmpty()) return
         if (s.isLowSpec && !s.showFastPathOffer && s.accelerator == Accelerator.AUTO) {
             // US-09: offer fast path once on low-spec devices
             _state.update { it.copy(showFastPathOffer = true) }
@@ -100,7 +104,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         val request = EnhanceRequest(
-            inputUri = uri,
+            inputUris = s.pickedUris,
             scale = s.scale,
             mode = s.mode,
             denoise = DenoiseStrength(s.denoise),
@@ -109,13 +113,14 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             accelerator = s.accelerator,
         )
         val json = JSONObject().apply {
-            put("inputUri", request.inputUri)
+            put("inputUris", JSONArray(request.inputUris))
             put("scale", request.scale.multiplier)
             put("mode", request.mode.name)
             put("denoise", request.denoise.percent)
             put("faceRestore", request.faceRestoreEnabled)
             put("faceStrength", request.faceRestoreStrength)
             put("accelerator", request.accelerator.name)
+            put("sharpen", request.sharpen)
         }
         val workData = Data.Builder().putString(EnhanceWorker.KEY_REQUEST, json.toString()).build()
         val work = OneTimeWorkRequestBuilder<EnhanceWorker>()
@@ -145,6 +150,8 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                                         tilesDone = p.getInt(EnhanceWorker.KEY_TILES_DONE, 0),
                                         tilesTotal = p.getInt(EnhanceWorker.KEY_TILES_TOTAL, 0),
                                         backendUsed = p.getString(EnhanceWorker.KEY_BACKEND),
+                                        batchIndex = p.getInt(EnhanceWorker.KEY_BATCH_INDEX, 0),
+                                        batchTotal = p.getInt(EnhanceWorker.KEY_BATCH_TOTAL, 1),
                                     ),
                                 )
                             }

@@ -3,26 +3,35 @@
 
     <!-- S1 Home -->
     <string name="home_title">Rimuru 2x</string>
-    <string name="home_pick_photo">Pick a photo</string>
+    <string name="home_pick_photo">Pick photos</string>
+    <string name="home_batch_hint">Select up to 20 photos — they\'ll be enhanced one by one with the same settings</string>
     <string name="home_drop_hint">Pick or share a photo to enhance — everything stays on your device</string>
     <string name="home_recent_jobs">Recent jobs</string>
     <string name="home_privacy_note">All processing happens on your device. Always.</string>
 
+    <!-- Batch -->
+    <string name="config_batch_title">Enhancing %1$d photos</string>
+    <string name="proc_batch_counter">Photo %1$d of %2$d</string>
+
     <!-- S2 Config -->
     <string name="config_scale">Scale</string>
+    <string name="config_scale_desc">Multiply the resolution — 2× is faster, 4× is for printing</string>
     <string name="config_mode">Engine mode</string>
     <string name="config_mode_precision">Precision</string>
     <string name="config_mode_precision_desc">Faithful detail — best for text, documents and line art</string>
     <string name="config_mode_creative">Creative</string>
     <string name="config_mode_creative_desc">Rich texture — best for photos, portraits and artwork</string>
     <string name="config_denoise">Denoise</string>
+    <string name="config_denoise_desc">Cleans JPEG artifacts and sensor noise before upscaling</string>
     <string name="config_denoise_off">Off</string>
     <string name="config_denoise_low">Low</string>
     <string name="config_denoise_medium">Medium</string>
     <string name="config_denoise_aggressive">Aggressive</string>
     <string name="config_face_restore">Face restore</string>
+    <string name="config_face_desc">Rebuilds blurry faces naturally — drag toward fidelity to keep the same person</string>
     <string name="config_face_strength">Fidelity ↔ Enhancement</string>
     <string name="config_accelerator">Hardware accelerator</string>
+    <string name="config_accel_desc">Auto picks the fastest chip available — force CPU if results look odd</string>
     <string name="config_accel_auto">Auto</string>
     <string name="config_accel_gpu">Vulkan GPU</string>
     <string name="config_accel_npu">NPU</string>

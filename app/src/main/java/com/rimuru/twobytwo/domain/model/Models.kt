@@ -38,9 +38,9 @@ data class DenoiseStrength(val percent: Int) {
     }
 }
 
-/** Full enhancement request — everything S2 collects. */
+/** Full enhancement request — everything S2 collects. Batch-capable. */
 data class EnhanceRequest(
-    val inputUri: String,
+    val inputUris: List<String>,
     val scale: ScaleFactor = ScaleFactor.X2,
     val mode: EngineMode = EngineMode.CREATIVE,
     val denoise: DenoiseStrength = DenoiseStrength.DEFAULT,
@@ -49,6 +49,8 @@ data class EnhanceRequest(
     val faceRestoreStrength: Int = 50,
     val accelerator: Accelerator = Accelerator.AUTO,
     val useNeuralEngine: Boolean = true,
+    /** Unsharp-mask post-pass for extra punch (skipped over MP ceiling for memory safety). */
+    val sharpen: Boolean = true,
 )
 
 enum class ProcessStep {
@@ -60,12 +62,14 @@ enum class ProcessStep {
     DONE;
 }
 
-/** Job progress reported to UI (US-06). */
+/** Job progress reported to UI (US-06); batch-aware. */
 data class JobProgress(
     val step: ProcessStep,
     val tilesDone: Int = 0,
     val tilesTotal: Int = 0,
     val backendUsed: String? = null,
+    val batchIndex: Int = 0,
+    val batchTotal: Int = 1,
 ) {
     val overall: Float
         get() = when (step) {

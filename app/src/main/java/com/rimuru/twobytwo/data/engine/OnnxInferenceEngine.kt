@@ -50,7 +50,7 @@ class OnnxInferenceEngine(
         modelKey: InferenceEngine.ModelKey,
     ): FloatArray {
         val session = sessionFor(modelKey)
-            ?: return bilinearFallback(input, tileWidth, tileHeight, modelKey)
+            ?: return bicubicFallback(input, tileWidth, tileHeight, modelKey)
         val shape = longArrayOf(1, 3, tileHeight.toLong(), tileWidth.toLong())
         val tensor = ai.onnxruntime.OnnxTensor.createTensor(env, FloatBuffer.wrap(input), shape)
         tensor.use {
@@ -115,39 +115,18 @@ class OnnxInferenceEngine(
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    /** Deterministic bilinear upscale so a missing model degrades gracefully (FR-1.3/§5.5). */
-    private fun bilinearFallback(
+    /** Catmull-Rom bicubic upscale so a missing model degrades gracefully (FR-1.3/§5.5). */
+    private fun bicubicFallback(
         input: FloatArray,
         w: Int,
         h: Int,
         modelKey: InferenceEngine.ModelKey,
-    ): FloatArray {
-        val scale = InferenceEngine.scaleFor(modelKey)
-        val ow = w * scale
-        val oh = h * scale
-        val out = FloatArray(3 * ow * oh)
-        for (c in 0 until 3) {
-            for (y in 0 until oh) {
-                val sy = y / scale.toFloat()
-                val y0 = sy.toInt().coerceIn(0, h - 1)
-                val y1 = (y0 + 1).coerceIn(0, h - 1)
-                val fy = sy - y0
-                for (x in 0 until ow) {
-                    val sx = x / scale.toFloat()
-                    val x0 = sx.toInt().coerceIn(0, w - 1)
-                    val x1 = (x0 + 1).coerceIn(0, w - 1)
-                    val fx = sx - x0
-                    val p00 = input[c * w * h + y0 * w + x0]
-                    val p10 = input[c * w * h + y0 * w + x1]
-                    val p01 = input[c * w * h + y1 * w + x0]
-                    val p11 = input[c * w * h + y1 * w + x1]
-                    out[c * ow * oh + y * ow + x] =
-                        p00 * (1 - fx) * (1 - fy) + p10 * fx * (1 - fy) + p01 * (1 - fx) * fy + p11 * fx * fy
-                }
-            }
-        }
-        return out
-    }
+    ): FloatArray = com.rimuru.twobytwo.domain.engine.ImageOps.bicubicUpscaleChw(
+        input,
+        w,
+        h,
+        InferenceEngine.scaleFor(modelKey),
+    )
 
     override fun close() {
         sessions.values.forEach { runCatching { it.close() } }

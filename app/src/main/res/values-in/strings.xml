@@ -3,24 +3,32 @@
 
     <string name="home_title">Rimuru 2x</string>
     <string name="home_pick_photo">Pilih foto</string>
+    <string name="home_batch_hint">Pilih hingga 20 foto — semuanya disempurnakan satu per satu dengan pengaturan yang sama</string>
     <string name="home_drop_hint">Pilih atau bagikan foto untuk disempurnakan — semuanya tetap di perangkat Anda</string>
     <string name="home_recent_jobs">Pekerjaan terakhir</string>
     <string name="home_privacy_note">Semua pemrosesan terjadi di perangkat Anda. Selalu.</string>
 
+    <string name="config_batch_title">Menyempurnakan %1$d foto</string>
+    <string name="proc_batch_counter">Foto %1$d dari %2$d</string>
+
     <string name="config_scale">Skala</string>
+    <string name="config_scale_desc">Perbesar resolusi — 2× lebih cepat, 4× untuk cetak</string>
     <string name="config_mode">Mode engine</string>
     <string name="config_mode_precision">Presisi</string>
     <string name="config_mode_precision_desc">Detail setia — terbaik untuk teks, dokumen, dan line art</string>
     <string name="config_mode_creative">Kreatif</string>
     <string name="config_mode_creative_desc">Tekstur kaya — terbaik untuk foto, potret, dan karya seni</string>
     <string name="config_denoise">Kurangi noise</string>
+    <string name="config_denoise_desc">Membersihkan artefak JPEG dan noise sensor sebelum upscale</string>
     <string name="config_denoise_off">Mati</string>
     <string name="config_denoise_low">Rendah</string>
     <string name="config_denoise_medium">Sedang</string>
     <string name="config_denoise_aggressive">Agresif</string>
     <string name="config_face_restore">Restorasi wajah</string>
+    <string name="config_face_desc">Membangun ulang wajah buram secara alami — arahkan ke fidelitas agar tetap dikenali</string>
     <string name="config_face_strength">Fidelitas ↔ Peningkatan</string>
     <string name="config_accelerator">Akselerator perangkat keras</string>
+    <string name="config_accel_desc">Otomatis memilih chip tercepat — paksa CPU jika hasil terlihat aneh</string>
     <string name="config_accel_auto">Otomatis</string>
     <string name="config_accel_gpu">Vulkan GPU</string>
     <string name="config_accel_npu">NPU</string>

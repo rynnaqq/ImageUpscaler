@@ -15,17 +15,22 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.Texture
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -57,9 +62,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -80,7 +85,7 @@ fun AppRoot(initialSharedUri: String?) {
     val snackbar = remember { SnackbarHostState() }
 
     LaunchedEffect(initialSharedUri) {
-        initialSharedUri?.let { vm.onIntent(EnhanceViewModel.Intent.PickPhoto(android.net.Uri.parse(it))) }
+        initialSharedUri?.let { vm.onIntent(EnhanceViewModel.Intent.PickPhotos(listOf(android.net.Uri.parse(it)))) }
     }
 
     RimuruTheme {
@@ -90,13 +95,13 @@ fun AppRoot(initialSharedUri: String?) {
                     state.error != null -> "error"
                     state.isProcessing -> "processing"
                     state.progress?.step == ProcessStep.DONE -> "export"
-                    state.pickedUri != null -> "config"
+                    state.pickedUris.isNotEmpty() -> "config"
                     else -> "home"
                 },
                 label = "screens",
             ) { screen ->
                 when (screen) {
-                    "home" -> HomeScreen(state) { uri -> vm.onIntent(EnhanceViewModel.Intent.PickPhoto(uri)) }
+                    "home" -> HomeScreen(state) { uris -> vm.onIntent(EnhanceViewModel.Intent.PickPhotos(uris)) }
                     "config" -> ConfigScreen(state, vm::onIntent)
                     "processing" -> ProcessingScreen(state, vm::onIntent)
                     "export" -> ExportScreen(state, vm::onIntent)
@@ -121,20 +126,17 @@ fun AppRoot(initialSharedUri: String?) {
     }
 }
 
-/** S1 — Home / photo input (Photo Picker, no permission needed on API 33+). */
-@OptIn(ExperimentalMaterial3Api::class)
+/** S1 — Home / photo input (Photo Picker, multi-select up to 20 for batches). */
 @Composable
 fun HomeScreen(
     state: EnhanceViewModel.UiState,
-    onPick: (android.net.Uri) -> Unit,
+    onPick: (List<android.net.Uri>) -> Unit,
 ) {
     val pickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
-    ) { uri -> uri?.let(onPick) }
+        androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia(maxItems = 20),
+    ) { uris -> if (uris.isNotEmpty()) onPick(uris) }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) { padding ->
+    Scaffold(containerColor = MaterialTheme.colorScheme.surface) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -144,7 +146,6 @@ fun HomeScreen(
         ) {
             Spacer(Modifier.weight(1.1f))
 
-            // App mark — the launcher art, circular
             AsyncImage(
                 model = "android.resource://com.rimuru.twobytwo/mipmap-xxxhdpi/ic_launcher_round",
                 contentDescription = null,
@@ -179,8 +180,17 @@ fun HomeScreen(
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
             ) {
+                Icon(Icons.Filled.PhotoLibrary, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
                 Text(stringResource(R.string.home_pick_photo), style = MaterialTheme.typography.labelLarge)
             }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                stringResource(R.string.home_batch_hint),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
             Spacer(Modifier.height(14.dp))
             Text(
                 stringResource(R.string.home_drop_hint),
@@ -193,192 +203,215 @@ fun HomeScreen(
     }
 }
 
-/** S2 — Configuration screen with grouped setting cards. */
-@OptIn(ExperimentalMaterial3Api::class)
+/** S2 — Configuration: original flat layout, each feature with icon + description. */
 @Composable
 fun ConfigScreen(
     state: EnhanceViewModel.UiState,
     onIntent: (EnhanceViewModel.Intent) -> Unit,
 ) {
-    val previewUri = state.pickedUri ?: return
+    val previewUri = state.previewUri ?: return
 
-    Scaffold(
-        topBar = {
-            CenterAlignedTopAppBar(
-                title = { Text(stringResource(R.string.app_name)) },
-                navigationIcon = {
-                    IconButton(onClick = { onIntent(EnhanceViewModel.Intent.ClearPhoto) }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(android.R.string.cancel))
-                    }
-                },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                ),
-            )
-        },
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) { padding ->
-        Column(
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        AsyncImage(
+            model = previewUri,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
             modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            AsyncImage(
-                model = previewUri,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(200.dp)
-                    .clip(RoundedCornerShape(20.dp)),
+                .fillMaxWidth()
+                .height(200.dp)
+                .clip(RoundedCornerShape(20.dp)),
+        )
+        if (state.pickedUris.size > 1) {
+            Text(
+                stringResource(R.string.config_batch_title, state.pickedUris.size),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
             )
+        }
 
-            SettingsCard(title = stringResource(R.string.config_scale)) {
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    ScaleFactor.entries.forEachIndexed { i, sf ->
-                        SegmentedButton(
-                            selected = state.scale == sf,
-                            onClick = { onIntent(EnhanceViewModel.Intent.SetScale(sf)) },
-                            shape = SegmentedButtonDefaults.itemShape(i, ScaleFactor.entries.size),
-                        ) { Text("${sf.multiplier}x") }
+        // Scale — icon + title + description + control
+        FeatureRow(
+            icon = Icons.Filled.SwapHoriz,
+            title = stringResource(R.string.config_scale),
+            description = stringResource(R.string.config_scale_desc),
+        ) {
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                ScaleFactor.entries.forEachIndexed { i, sf ->
+                    SegmentedButton(
+                        selected = state.scale == sf,
+                        onClick = { onIntent(EnhanceViewModel.Intent.SetScale(sf)) },
+                        shape = SegmentedButtonDefaults.itemShape(i, ScaleFactor.entries.size),
+                    ) { Text("${sf.multiplier}x") }
+                }
+            }
+        }
+
+        // Engine mode
+        FeatureRow(
+            icon = Icons.Filled.AutoAwesome,
+            title = stringResource(R.string.config_mode),
+            description = stringResource(
+                if (state.mode == EngineMode.PRECISION) R.string.config_mode_precision_desc else R.string.config_mode_creative_desc,
+            ),
+        ) {
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                EngineMode.entries.forEachIndexed { i, mode ->
+                    SegmentedButton(
+                        selected = state.mode == mode,
+                        onClick = { onIntent(EnhanceViewModel.Intent.SetMode(mode)) },
+                        shape = SegmentedButtonDefaults.itemShape(i, EngineMode.entries.size),
+                    ) {
+                        Text(
+                            stringResource(
+                                if (mode == EngineMode.PRECISION) R.string.config_mode_precision else R.string.config_mode_creative,
+                            ),
+                        )
                     }
                 }
             }
+        }
 
-            SettingsCard(title = stringResource(R.string.config_mode)) {
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    EngineMode.entries.forEachIndexed { i, mode ->
-                        SegmentedButton(
-                            selected = state.mode == mode,
-                            onClick = { onIntent(EnhanceViewModel.Intent.SetMode(mode)) },
-                            shape = SegmentedButtonDefaults.itemShape(i, EngineMode.entries.size),
-                        ) {
-                            Text(
-                                stringResource(
-                                    if (mode == EngineMode.PRECISION) R.string.config_mode_precision else R.string.config_mode_creative,
-                                ),
-                            )
-                        }
-                    }
+        // Denoise
+        FeatureRow(
+            icon = Icons.Filled.Texture,
+            title = stringResource(R.string.config_denoise),
+            description = stringResource(R.string.config_denoise_desc),
+        ) {
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                val presets = listOf(
+                    R.string.config_denoise_off to 0,
+                    R.string.config_denoise_low to 25,
+                    R.string.config_denoise_medium to 50,
+                    R.string.config_denoise_aggressive to 100,
+                )
+                presets.forEachIndexed { i, (label, value) ->
+                    SegmentedButton(
+                        selected = state.denoise == value,
+                        onClick = { onIntent(EnhanceViewModel.Intent.SetDenoise(value)) },
+                        shape = SegmentedButtonDefaults.itemShape(i, presets.size),
+                    ) { Text(stringResource(label)) }
                 }
-                Spacer(Modifier.height(6.dp))
+            }
+            Slider(
+                value = state.denoise.toFloat(),
+                onValueChange = { onIntent(EnhanceViewModel.Intent.SetDenoise(it.toInt())) },
+                valueRange = 0f..100f,
+            )
+        }
+
+        // Face restore
+        FeatureRow(
+            icon = Icons.Filled.Face,
+            title = stringResource(R.string.config_face_restore),
+            description = stringResource(R.string.config_face_desc),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 Text(
-                    stringResource(
-                        if (state.mode == EngineMode.PRECISION) R.string.config_mode_precision_desc else R.string.config_mode_creative_desc,
-                    ),
+                    stringResource(R.string.config_face_strength),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Switch(
+                    checked = state.faceRestore,
+                    onCheckedChange = { onIntent(EnhanceViewModel.Intent.SetFaceRestore(it)) },
+                )
+            }
+            AnimatedVisibility(state.faceRestore) {
+                Slider(
+                    value = state.faceStrength.toFloat(),
+                    onValueChange = { onIntent(EnhanceViewModel.Intent.SetFaceStrength(it.toInt())) },
+                    valueRange = 0f..100f,
+                )
+            }
+        }
+
+        // Accelerator
+        FeatureRow(
+            icon = Icons.Filled.Memory,
+            title = stringResource(R.string.config_accelerator),
+            description = stringResource(R.string.config_accel_desc),
+        ) {
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                val accelerators = Accelerator.entries
+                accelerators.forEachIndexed { i, acc ->
+                    SegmentedButton(
+                        selected = state.accelerator == acc,
+                        onClick = { onIntent(EnhanceViewModel.Intent.SetAccelerator(acc)) },
+                        shape = SegmentedButtonDefaults.itemShape(i, accelerators.size),
+                    ) { Text(stringResource(accelLabel(acc))) }
+                }
+            }
+        }
+
+        val estW = (state.pickedWidth.takeIf { it > 0 } ?: 1920) * state.scale.multiplier
+        val estH = (state.pickedHeight.takeIf { it > 0 } ?: 1080) * state.scale.multiplier
+        Text(
+            stringResource(R.string.config_output_size, estW, estH),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Button(
+            onClick = { onIntent(EnhanceViewModel.Intent.StartEnhance) },
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            Icon(Icons.Filled.AutoAwesome, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(stringResource(R.string.config_enhance), style = MaterialTheme.typography.labelLarge)
+        }
+        Spacer(Modifier.height(12.dp))
+    }
+}
+
+/**
+ * One feature block: leading icon in a tinted circle, title, one-line description,
+ * then the control below. Flat layout — no card wrapper.
+ */
+@Composable
+private fun FeatureRow(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    content: @Composable () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(21.dp),
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    description,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-
-            SettingsCard(title = stringResource(R.string.config_denoise)) {
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    val presets = listOf(
-                        R.string.config_denoise_off to 0,
-                        R.string.config_denoise_low to 25,
-                        R.string.config_denoise_medium to 50,
-                        R.string.config_denoise_aggressive to 100,
-                    )
-                    presets.forEachIndexed { i, (label, value) ->
-                        SegmentedButton(
-                            selected = state.denoise == value,
-                            onClick = { onIntent(EnhanceViewModel.Intent.SetDenoise(value)) },
-                            shape = SegmentedButtonDefaults.itemShape(i, presets.size),
-                        ) { Text(stringResource(label)) }
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
-                Slider(
-                    value = state.denoise.toFloat(),
-                    onValueChange = { onIntent(EnhanceViewModel.Intent.SetDenoise(it.toInt())) },
-                    valueRange = 0f..100f,
-                )
-            }
-
-            SettingsCard(title = stringResource(R.string.config_face_restore)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        stringResource(R.string.config_face_restore),
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                    Switch(
-                        checked = state.faceRestore,
-                        onCheckedChange = { onIntent(EnhanceViewModel.Intent.SetFaceRestore(it)) },
-                    )
-                }
-                AnimatedVisibility(state.faceRestore) {
-                    Column {
-                        Text(
-                            stringResource(R.string.config_face_strength),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Slider(
-                            value = state.faceStrength.toFloat(),
-                            onValueChange = { onIntent(EnhanceViewModel.Intent.SetFaceStrength(it.toInt())) },
-                            valueRange = 0f..100f,
-                        )
-                    }
-                }
-            }
-
-            SettingsCard(title = stringResource(R.string.config_accelerator)) {
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    val accelerators = Accelerator.entries
-                    accelerators.forEachIndexed { i, acc ->
-                        SegmentedButton(
-                            selected = state.accelerator == acc,
-                            onClick = { onIntent(EnhanceViewModel.Intent.SetAccelerator(acc)) },
-                            shape = SegmentedButtonDefaults.itemShape(i, accelerators.size),
-                        ) { Text(stringResource(accelLabel(acc))) }
-                    }
-                }
-            }
-
-            val estW = (state.pickedWidth.takeIf { it > 0 } ?: 1920) * state.scale.multiplier
-            val estH = (state.pickedHeight.takeIf { it > 0 } ?: 1080) * state.scale.multiplier
-            Text(
-                stringResource(R.string.config_output_size, estW, estH),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 4.dp),
-            )
-
-            Button(
-                onClick = { onIntent(EnhanceViewModel.Intent.StartEnhance) },
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-                shape = RoundedCornerShape(16.dp),
-            ) {
-                Text(stringResource(R.string.config_enhance), style = MaterialTheme.typography.labelLarge)
-            }
-            Spacer(Modifier.height(12.dp))
         }
-    }
-}
-
-/** Elevated card wrapping one settings group. */
-@Composable
-private fun SettingsCard(
-    title: String,
-    content: @Composable () -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-            content()
-        }
+        content()
     }
 }
 
@@ -405,6 +438,14 @@ fun ProcessingScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
+            if (progress.batchTotal > 1) {
+                Text(
+                    stringResource(R.string.proc_batch_counter, progress.batchIndex + 1, progress.batchTotal),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
             Text(
                 stepLabel(progress),
                 style = MaterialTheme.typography.titleLarge,
@@ -459,7 +500,6 @@ private fun stepLabel(p: com.rimuru.twobytwo.domain.model.JobProgress): String =
 }
 
 /** S4+S5 combined — result view with before/after split + export actions. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ExportScreen(
     state: EnhanceViewModel.UiState,
@@ -470,6 +510,11 @@ fun ExportScreen(
         topBar = {
             CenterAlignedTopAppBar(
                 title = { Text(stringResource(R.string.compare_title)) },
+                navigationIcon = {
+                    IconButton(onClick = { onIntent(EnhanceViewModel.Intent.ClearPhoto) }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(android.R.string.cancel))
+                    }
+                },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
                 ),
@@ -481,12 +526,12 @@ fun ExportScreen(
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            state.pickedUri?.let { original ->
+            state.previewUri?.let { original ->
                 ComparisonViewer(
                     originalUri = original,
                     // ponytail: worker saves directly to MediaStore; result-URI Data
                     // field is the M1 upgrade so the right half shows the real output.
-                    resultUri = state.pickedUri,
+                    resultUri = state.previewUri,
                     modifier = Modifier.weight(1f).clip(RoundedCornerShape(20.dp)),
                 )
             }
@@ -507,7 +552,7 @@ fun ExportScreen(
                     onClick = {
                         val share = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                             type = "image/*"
-                            putExtra(android.content.Intent.EXTRA_STREAM, state.pickedUri?.let { android.net.Uri.parse(it) })
+                            putExtra(android.content.Intent.EXTRA_STREAM, state.previewUri?.let { android.net.Uri.parse(it) })
                             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
                         context.startActivity(android.content.Intent.createChooser(share, null))
@@ -533,15 +578,12 @@ fun ComparisonViewer(
     var splitFraction by remember { mutableStateOf(0.5f) }
 
     androidx.compose.foundation.layout.BoxWithConstraints(modifier) {
-        // Result fills the box (right side shows through)
         AsyncImage(
             model = resultUri ?: originalUri,
             contentDescription = null,
             contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxSize(),
         )
-
-        // Original clipped to the left of the divider
         AsyncImage(
             model = originalUri,
             contentDescription = stringResource(R.string.compare_hold_hint),
@@ -550,8 +592,6 @@ fun ComparisonViewer(
                 .fillMaxSize()
                 .clipToBounds()
         )
-
-        // Draggable divider gesture surface
         Box(
             modifier = Modifier
                 .fillMaxSize()
