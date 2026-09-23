@@ -19,18 +19,21 @@ class TilingManagerTest {
         assertEquals(2160, tiling.outWidth)
         assertEquals(3840, tiling.outHeight)
 
-        // Every output pixel covered by exactly one core
-        val coverage = HashMap<Long, Int>()
+        // Every output pixel covered by exactly one core (flat counter array — no boxing)
+        val total = tiling.outWidth.toLong() * tiling.outHeight
+        val coverage = ByteArray(total.toInt())
+        var covered = 0L
         for (tile in tiling.tiles()) {
             for (y in tile.coreOutY until tile.coreOutY + tile.coreH) {
                 for (x in tile.coreOutX until tile.coreOutX + tile.coreW) {
-                    val key = y.toLong() * tiling.outWidth + x
-                    coverage[key] = (coverage[key] ?: 0) + 1
+                    val idx = y * tiling.outWidth + x
+                    coverage[idx] = (coverage[idx] + 1).toByte()
+                    covered++
                 }
             }
         }
-        assertEquals(tiling.outWidth.toLong() * tiling.outHeight, coverage.size.toLong())
-        assertTrue("overlap in cores detected", coverage.values.all { it == 1 })
+        assertEquals(total, covered)
+        assertTrue("overlap in cores detected", coverage.all { it.toInt() == 1 })
     }
 
     @Test
