@@ -1,0 +1,63 @@
+<resources>
+    <string name="app_name">Rimuru 2x</string>
+
+    <string name="home_title">Rimuru 2x</string>
+    <string name="home_pick_photo">Pilih foto</string>
+    <string name="home_drop_hint">Pilih atau bagikan foto untuk disempurnakan — semuanya tetap di perangkat Anda</string>
+    <string name="home_recent_jobs">Pekerjaan terakhir</string>
+    <string name="home_privacy_note">Semua pemrosesan terjadi di perangkat Anda. Selalu.</string>
+
+    <string name="config_scale">Skala</string>
+    <string name="config_mode">Mode engine</string>
+    <string name="config_mode_precision">Presisi</string>
+    <string name="config_mode_precision_desc">Detail setia — terbaik untuk teks, dokumen, dan line art</string>
+    <string name="config_mode_creative">Kreatif</string>
+    <string name="config_mode_creative_desc">Tekstur kaya — terbaik untuk foto, potret, dan karya seni</string>
+    <string name="config_denoise">Kurangi noise</string>
+    <string name="config_denoise_off">Mati</string>
+    <string name="config_denoise_low">Rendah</string>
+    <string name="config_denoise_medium">Sedang</string>
+    <string name="config_denoise_aggressive">Agresif</string>
+    <string name="config_face_restore">Restorasi wajah</string>
+    <string name="config_face_strength">Fidelitas ↔ Peningkatan</string>
+    <string name="config_accelerator">Akselerator perangkat keras</string>
+    <string name="config_accel_auto">Otomatis</string>
+    <string name="config_accel_gpu">Vulkan GPU</string>
+    <string name="config_accel_npu">NPU</string>
+    <string name="config_accel_cpu">CPU</string>
+    <string name="config_output_size">Output: %1$dx%2$d</string>
+    <string name="config_enhance">Sempurnakan</string>
+    <string name="config_fast_path_offer">Perangkat ini mungkin lambat untuk upscale neural — gunakan mode cepat?</string>
+    <string name="config_fast_path_yes">Mode cepat</string>
+    <string name="config_fast_path_no">Coba neural</string>
+
+    <string name="proc_title">Menyempurnakan…</string>
+    <string name="proc_step_preparing">Menyiapkan…</string>
+    <string name="proc_step_detecting_faces">Mendeteksi wajah…</string>
+    <string name="proc_step_tiles">Memproses tile (%1$d/%2$d)…</string>
+    <string name="proc_step_restoring_faces">Memulihkan wajah…</string>
+    <string name="proc_step_blending">Menggabungkan output…</string>
+    <string name="proc_step_done">Selesai</string>
+    <string name="proc_cancel">Batal</string>
+    <string name="proc_cancel_confirm_title">Batalkan pekerjaan?</string>
+    <string name="proc_cancel_confirm_text">Pekerjaan sudah lebih dari setengah selesai. Tetap batalkan?</string>
+    <string name="proc_backend_used">Akselerator: %1$s</string>
+
+    <string name="compare_title">Bandingkan</string>
+    <string name="compare_hold_hint">Tahan untuk melihat foto asli</string>
+    <string name="compare_side_by_side">Bersebelahan</string>
+
+    <string name="export_title">Ekspor</string>
+    <string name="export_format">Format</string>
+    <string name="export_png">PNG (tanpa kehilangan)</string>
+    <string name="export_jpeg">JPEG (kualitas tinggi)</string>
+    <string name="export_keep_exif">Simpan metadata foto (Exif)</string>
+    <string name="export_save">Simpan ke galeri</string>
+    <string name="export_saved">Tersimpan ke galeri</string>
+    <string name="export_share">Bagikan</string>
+    <string name="export_save_copy">Simpan salinan</string>
+
+    <string name="error_model_missing">Model neural tidak tersedia — mode cepat digunakan</string>
+    <string name="error_job_failed">Penyempurnaan gagal</string>
+    <string name="error_input_too_large">Foto terlalu besar (%1$d MP). Silakan pilih yang lebih kecil.</string>
+</resources>

@@ -1,0 +1,69 @@
+<resources>
+    <string name="app_name">Rimuru 2x</string>
+
+    <!-- S1 Home -->
+    <string name="home_title">Rimuru 2x</string>
+    <string name="home_pick_photo">Pick a photo</string>
+    <string name="home_drop_hint">Pick or share a photo to enhance — everything stays on your device</string>
+    <string name="home_recent_jobs">Recent jobs</string>
+    <string name="home_privacy_note">All processing happens on your device. Always.</string>
+
+    <!-- S2 Config -->
+    <string name="config_scale">Scale</string>
+    <string name="config_mode">Engine mode</string>
+    <string name="config_mode_precision">Precision</string>
+    <string name="config_mode_precision_desc">Faithful detail — best for text, documents and line art</string>
+    <string name="config_mode_creative">Creative</string>
+    <string name="config_mode_creative_desc">Rich texture — best for photos, portraits and artwork</string>
+    <string name="config_denoise">Denoise</string>
+    <string name="config_denoise_off">Off</string>
+    <string name="config_denoise_low">Low</string>
+    <string name="config_denoise_medium">Medium</string>
+    <string name="config_denoise_aggressive">Aggressive</string>
+    <string name="config_face_restore">Face restore</string>
+    <string name="config_face_strength">Fidelity ↔ Enhancement</string>
+    <string name="config_accelerator">Hardware accelerator</string>
+    <string name="config_accel_auto">Auto</string>
+    <string name="config_accel_gpu">Vulkan GPU</string>
+    <string name="config_accel_npu">NPU</string>
+    <string name="config_accel_cpu">CPU</string>
+    <string name="config_output_size">Output: %1$dx%2$d</string>
+    <string name="config_enhance">Enhance</string>
+    <string name="config_fast_path_offer">This device may be slow for neural upscaling — use fast mode instead?</string>
+    <string name="config_fast_path_yes">Use fast mode</string>
+    <string name="config_fast_path_no">Try neural anyway</string>
+
+    <!-- S3 Processing -->
+    <string name="proc_title">Enhancing…</string>
+    <string name="proc_step_preparing">Preparing…</string>
+    <string name="proc_step_detecting_faces">Detecting faces…</string>
+    <string name="proc_step_tiles">Processing tiles (%1$d/%2$d)…</string>
+    <string name="proc_step_restoring_faces">Restoring faces…</string>
+    <string name="proc_step_blending">Blending output…</string>
+    <string name="proc_step_done">Done</string>
+    <string name="proc_cancel">Cancel</string>
+    <string name="proc_cancel_confirm_title">Cancel job?</string>
+    <string name="proc_cancel_confirm_text">The job is more than half done. Cancel anyway?</string>
+    <string name="proc_backend_used">Accelerator: %1$s</string>
+
+    <!-- S4 Comparison -->
+    <string name="compare_title">Compare</string>
+    <string name="compare_hold_hint">Hold to see original</string>
+    <string name="compare_side_by_side">Side by side</string>
+
+    <!-- S5 Export -->
+    <string name="export_title">Export</string>
+    <string name="export_format">Format</string>
+    <string name="export_png">PNG (lossless)</string>
+    <string name="export_jpeg">JPEG (high quality)</string>
+    <string name="export_keep_exif">Keep photo metadata (Exif)</string>
+    <string name="export_save">Save to gallery</string>
+    <string name="export_saved">Saved to gallery</string>
+    <string name="export_share">Share</string>
+    <string name="export_save_copy">Save a copy</string>
+
+    <!-- Errors -->
+    <string name="error_model_missing">Neural model unavailable — fast mode used instead</string>
+    <string name="error_job_failed">Enhancement failed</string>
+    <string name="error_input_too_large">This photo is too large (%1$d MP). Please pick a smaller one.</string>
+</resources>
