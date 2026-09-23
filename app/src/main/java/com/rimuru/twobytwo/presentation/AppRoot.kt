@@ -65,6 +65,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -500,6 +501,7 @@ private fun stepLabel(p: com.rimuru.twobytwo.domain.model.JobProgress): String =
 }
 
 /** S4+S5 combined — result view with before/after split + export actions. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ExportScreen(
     state: EnhanceViewModel.UiState,
