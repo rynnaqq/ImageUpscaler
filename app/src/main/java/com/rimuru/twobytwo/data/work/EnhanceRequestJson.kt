@@ -20,6 +20,10 @@ internal object EnhanceRequestJson {
         put("sharpen", request.sharpen)
         put("deblurEnabled", request.deblurEnabled)
         put("deblurStrength", request.deblurStrength)
+        put("scratchRepairEnabled", request.scratchRepairEnabled)
+        put("scratchRepairStrength", request.scratchRepairStrength)
+        put("colorizeEnabled", request.colorizeEnabled)
+        put("colorizeStrength", request.colorizeStrength)
     }.toString()
 
     fun decode(json: String?): EnhanceRequest? {
@@ -41,6 +45,10 @@ internal object EnhanceRequestJson {
                 sharpen = o.optBoolean("sharpen", true),
                 deblurEnabled = o.optBoolean("deblurEnabled", false),
                 deblurStrength = o.optInt("deblurStrength", 50),
+                scratchRepairEnabled = o.optBoolean("scratchRepairEnabled", false),
+                scratchRepairStrength = o.optInt("scratchRepairStrength", 50),
+                colorizeEnabled = o.optBoolean("colorizeEnabled", false),
+                colorizeStrength = o.optInt("colorizeStrength", 50),
             )
         }.getOrNull()
     }

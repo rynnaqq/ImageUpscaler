@@ -1,5 +1,6 @@
 package com.rimuru.twobytwo.domain.usecase
 
+import com.rimuru.twobytwo.domain.engine.ColorizePass
 import com.rimuru.twobytwo.domain.engine.DeblurPass
 import com.rimuru.twobytwo.domain.engine.DenoisePass
 import com.rimuru.twobytwo.domain.engine.ImageOps
@@ -8,6 +9,7 @@ import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.engine.ModelProvider
 import com.rimuru.twobytwo.domain.engine.PassContext
 import com.rimuru.twobytwo.domain.engine.RgbaImage
+import com.rimuru.twobytwo.domain.engine.ScratchRepairPass
 import com.rimuru.twobytwo.domain.engine.TensorCodec
 import com.rimuru.twobytwo.domain.engine.TileBlender
 import com.rimuru.twobytwo.domain.engine.TilingManager
@@ -249,6 +251,32 @@ class EnhanceImage(
             checkPassCancellation(cancellationRequested)
             restored = result.image
             passStatuses += "deblur=${result.detail}"
+        }
+        if (request.scratchRepairEnabled) {
+            checkPassCancellation(cancellationRequested)
+            val result = ScratchRepairPass(
+                strength = request.scratchRepairStrength,
+                isCancelled = cancellationRequested,
+            ).apply(
+                restored,
+                PassContext(request.scratchRepairStrength, passProvider),
+            )
+            checkPassCancellation(cancellationRequested)
+            restored = result.image
+            passStatuses += "scratch-repair=${result.detail}"
+        }
+        if (request.colorizeEnabled) {
+            checkPassCancellation(cancellationRequested)
+            val result = ColorizePass(
+                strength = request.colorizeStrength,
+                isCancelled = cancellationRequested,
+            ).apply(
+                restored,
+                PassContext(request.colorizeStrength, passProvider),
+            )
+            checkPassCancellation(cancellationRequested)
+            restored = result.image
+            passStatuses += "colorize=${result.detail}"
         }
         checkPassCancellation(cancellationRequested)
 

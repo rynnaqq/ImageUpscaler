@@ -63,6 +63,10 @@ data class EnhanceRequest(
     val sharpen: Boolean = true,
     val deblurEnabled: Boolean = false,
     val deblurStrength: Int = 50,
+    val scratchRepairEnabled: Boolean = false,
+    val scratchRepairStrength: Int = 50,
+    val colorizeEnabled: Boolean = false,
+    val colorizeStrength: Int = 50,
 ) {
     init {
         require(faceRestoreStrength in 0..100) {
@@ -70,6 +74,12 @@ data class EnhanceRequest(
         }
         require(deblurStrength in 0..100) {
             "deblur strength must be 0..100, got $deblurStrength"
+        }
+        require(scratchRepairStrength in 0..100) {
+            "scratch repair strength must be 0..100, got $scratchRepairStrength"
+        }
+        require(colorizeStrength in 0..100) {
+            "colorize strength must be 0..100, got $colorizeStrength"
         }
     }
 }
