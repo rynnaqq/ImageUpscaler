@@ -90,6 +90,7 @@ class EnhanceScaleTest {
         ).toList()
 
         assertEquals("content://output/output.png", progress.last().outputUri)
+        assertEquals("test; 1 ok, 0 failed", progress.last().backendUsed)
         assertEquals(
             listOf(
                 InferenceEngine.ModelKey.CREATIVE_X2,

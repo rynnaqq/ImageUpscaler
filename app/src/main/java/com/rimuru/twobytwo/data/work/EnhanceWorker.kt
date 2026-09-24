@@ -69,17 +69,12 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             flow.collect { progress ->
                 last = progress
                 val reportedBackend = progress.backendUsed ?: engine.backendName
-                val backendStatus = if (progress.step == ProcessStep.DONE && reportedBackend != engine.backendName) {
-                    "$reportedBackend; ${engine.backendName}"
-                } else {
-                    reportedBackend
-                }
                 setProgress(
                     androidx.work.workDataOf(
                         KEY_STEP to progress.step.name,
                         KEY_TILES_DONE to progress.tilesDone,
                         KEY_TILES_TOTAL to progress.tilesTotal,
-                        KEY_BACKEND to backendStatus,
+                        KEY_BACKEND to reportedBackend,
                         KEY_BATCH_INDEX to progress.batchIndex,
                         KEY_BATCH_TOTAL to progress.batchTotal,
                         KEY_OUTPUT_URI to progress.outputUri.orEmpty(),

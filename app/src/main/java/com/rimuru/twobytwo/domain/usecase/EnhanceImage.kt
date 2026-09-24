@@ -161,7 +161,7 @@ class EnhanceImage(
                     ProcessStep.DONE,
                     batchIndex = total - 1,
                     batchTotal = total,
-                    backendUsed = "$succeeded ok, $failed failed",
+                    backendUsed = "${engine.backendName}; $succeeded ok, $failed failed",
                     outputUri = outputUri,
                     error = if (outputUri == null) lastError else null,
                 ),

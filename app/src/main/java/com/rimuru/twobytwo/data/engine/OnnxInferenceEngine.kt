@@ -54,22 +54,31 @@ class OnnxInferenceEngine(
     ): FloatArray {
         val session = sessionFor(modelKey)
             ?: return bicubicFallback(input, tileWidth, tileHeight, modelKey)
-        val shape = longArrayOf(1, 3, tileHeight.toLong(), tileWidth.toLong())
-        val tensor = ai.onnxruntime.OnnxTensor.createTensor(env, FloatBuffer.wrap(input), shape)
-        tensor.use {
-            session.run(mapOf(session.inputNames.first() to it)).use { results ->
-                @Suppress("UNCHECKED_CAST")
-                val outTensor = results[0].value as Array<Array<Array<FloatArray>>>
-                val outH = outTensor[0][0].size
-                val outW = outTensor[0][0][0].size
-                val flat = FloatArray(3 * outH * outW)
-                for (c in 0 until 3) {
-                    for (y in 0 until outH) {
-                        System.arraycopy(outTensor[0][c][y], 0, flat, c * outH * outW + y * outW, outW)
+        return try {
+            val shape = longArrayOf(1, 3, tileHeight.toLong(), tileWidth.toLong())
+            val tensor = ai.onnxruntime.OnnxTensor.createTensor(env, FloatBuffer.wrap(input), shape)
+            tensor.use {
+                session.run(mapOf(session.inputNames.first() to it)).use { results ->
+                    @Suppress("UNCHECKED_CAST")
+                    val outTensor = results[0].value as Array<Array<Array<FloatArray>>>
+                    val outH = outTensor[0][0].size
+                    val outW = outTensor[0][0][0].size
+                    val flat = FloatArray(3 * outH * outW)
+                    for (c in 0 until 3) {
+                        for (y in 0 until outH) {
+                            System.arraycopy(outTensor[0][c][y], 0, flat, c * outH * outW + y * outW, outW)
+                        }
                     }
+                    flat
                 }
-                return flat
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: OutOfMemoryError) {
+            throw e
+        } catch (t: Throwable) {
+            markFallback("${_backendName} runtime unavailable${reasonSuffix(t)}")
+            bicubicFallback(input, tileWidth, tileHeight, modelKey)
         }
     }
 
@@ -94,7 +103,7 @@ class OnnxInferenceEngine(
                 markFallback("invalid model handle (${modelKey.assetName})")
                 null
             } else {
-                val session = env.createSession(path, OrtSession.SessionOptions())
+                val session = createSession(path)
                 sessions[modelKey] = session
                 handles += handle
                 _backendName = handle.backendName
@@ -106,6 +115,38 @@ class OnnxInferenceEngine(
             closeHandle(handle)
             markFallback("${handle.backendName} session unavailable${reasonSuffix(t)}")
             null
+        }
+    }
+
+    private fun createSession(path: String): OrtSession {
+        val options = OrtSession.SessionOptions()
+        var session: OrtSession? = null
+        return try {
+            env.createSession(path, options).also { session = it }
+        } catch (e: OutOfMemoryError) {
+            closeSession(session)
+            throw e
+        } catch (t: Throwable) {
+            closeSession(session)
+            throw t
+        } finally {
+            try {
+                options.close()
+            } catch (e: OutOfMemoryError) {
+                closeSession(session)
+                throw e
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun closeSession(session: OrtSession?) {
+        if (session == null) return
+        try {
+            session.close()
+        } catch (e: OutOfMemoryError) {
+            throw e
+        } catch (_: Throwable) {
         }
     }
 
@@ -139,14 +180,7 @@ class OnnxInferenceEngine(
     )
 
     override fun close() {
-        sessions.values.forEach {
-            try {
-                it.close()
-            } catch (e: OutOfMemoryError) {
-                throw e
-            } catch (_: Throwable) {
-            }
-        }
+        sessions.values.forEach { closeSession(it) }
         sessions.clear()
         handles.forEach(::closeHandle)
         handles.clear()

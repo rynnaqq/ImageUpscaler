@@ -48,8 +48,9 @@ class ModelRegistry(
     private fun materialize(entry: ModelManifest.Entry): File? {
         val file = File(cacheDirectory, entry.fileName)
         return try {
+            if (entry.sha256.isBlank()) return null
             cacheDirectory.mkdirs()
-            if (file.exists() && (entry.sha256.isEmpty() || sha256(file) == entry.sha256)) {
+            if (file.exists() && sha256(file) == entry.sha256) {
                 return file
             }
             if (file.exists()) file.delete()
@@ -57,7 +58,7 @@ class ModelRegistry(
             input.use { source ->
                 file.outputStream().use { target -> source.copyTo(target) }
             }
-            if (entry.sha256.isEmpty() || sha256(file) == entry.sha256) {
+            if (sha256(file) == entry.sha256) {
                 file
             } else {
                 file.delete()

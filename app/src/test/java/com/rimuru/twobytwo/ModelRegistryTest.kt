@@ -31,6 +31,27 @@ class ModelRegistryTest {
     }
 
     @Test
+    fun `empty checksum rejects cached model without reading asset`() {
+        val key = InferenceEngine.ModelKey.CREATIVE_X2
+        val cache = Files.createTempDirectory("model-registry-empty-checksum").toFile()
+        File(cache, "model.onnx").writeText("cached")
+        var assetRequests = 0
+        val registry = ModelRegistry(
+            manifest = ModelManifest(
+                mapOf(key to ModelManifest.Entry("model.onnx", "test", "")),
+            ),
+            cacheDirectory = cache,
+            assetSource = {
+                assetRequests++
+                null
+            },
+        )
+
+        assertNull(registry.load(key))
+        assertEquals(0, assetRequests)
+    }
+
+    @Test
     fun `checksum mismatch deletes cached file`() {
         val key = InferenceEngine.ModelKey.CREATIVE_X2
         val cache = Files.createTempDirectory("model-registry-checksum").toFile()
