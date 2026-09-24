@@ -12,6 +12,7 @@ import androidx.work.WorkerParameters
 import com.rimuru.twobytwo.R
 import com.rimuru.twobytwo.data.device.DeviceTiers
 import com.rimuru.twobytwo.data.engine.ModelManifest
+import com.rimuru.twobytwo.data.engine.ModelRegistry
 import com.rimuru.twobytwo.data.engine.OnnxInferenceEngine
 import com.rimuru.twobytwo.data.media.MediaStoreImageIo
 import com.rimuru.twobytwo.domain.model.Accelerator
@@ -47,7 +48,8 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         val request = parseRequest(inputData.getString(KEY_REQUEST)) ?: return failure("Invalid enhancement request")
         val baseName = inputData.getString(KEY_OUTPUT_NAME) ?: defaultBaseName()
         val tier = DeviceTiers.classify(applicationContext)
-        val engine = OnnxInferenceEngine(applicationContext, ModelManifest.PLACEHOLDER)
+        val registry = ModelRegistry(applicationContext, ModelManifest.PLACEHOLDER)
+        val engine = OnnxInferenceEngine(registry)
 
         try {
             setForeground(createForegroundInfo(applicationContext.getString(R.string.proc_step_preparing)))
@@ -66,12 +68,18 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             var last: JobProgress? = null
             flow.collect { progress ->
                 last = progress
+                val reportedBackend = progress.backendUsed ?: engine.backendName
+                val backendStatus = if (progress.step == ProcessStep.DONE && reportedBackend != engine.backendName) {
+                    "$reportedBackend; ${engine.backendName}"
+                } else {
+                    reportedBackend
+                }
                 setProgress(
                     androidx.work.workDataOf(
                         KEY_STEP to progress.step.name,
                         KEY_TILES_DONE to progress.tilesDone,
                         KEY_TILES_TOTAL to progress.tilesTotal,
-                        KEY_BACKEND to (progress.backendUsed ?: engine.backendName),
+                        KEY_BACKEND to backendStatus,
                         KEY_BATCH_INDEX to progress.batchIndex,
                         KEY_BATCH_TOTAL to progress.batchTotal,
                         KEY_OUTPUT_URI to progress.outputUri.orEmpty(),
@@ -88,6 +96,8 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             } else {
                 failure(last?.error)
             }
+        } catch (e: OutOfMemoryError) {
+            throw e
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             return failure(t.message)

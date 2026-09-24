@@ -4,10 +4,10 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
+import com.rimuru.twobytwo.domain.engine.ModelHandle
+import com.rimuru.twobytwo.domain.engine.ModelProvider
 import com.rimuru.twobytwo.domain.model.Accelerator
-import java.io.File
 import java.nio.FloatBuffer
-import java.security.MessageDigest
 
 /**
  * ONNX Runtime Mobile engine (PRD TC-2). Models load from assets → filesDir cache
@@ -18,16 +18,19 @@ import java.security.MessageDigest
  * (present in newer ORT builds) is the upgrade path when we benchmark it.
  */
 class OnnxInferenceEngine(
-    private val context: Context,
-    private val manifest: ModelManifest,
+    private val modelProvider: ModelProvider,
+    private val environmentFactory: () -> OrtEnvironment = { OrtEnvironment.getEnvironment() },
 ) : InferenceEngine {
 
-    private val env: OrtEnvironment by lazy { OrtEnvironment.getEnvironment() }
+    constructor(context: Context, manifest: ModelManifest) : this(ModelRegistry(context, manifest))
+
+    private val env: OrtEnvironment by lazy(environmentFactory)
     private val sessions = mutableMapOf<InferenceEngine.ModelKey, OrtSession>()
+    private val handles = mutableListOf<ModelHandle>()
 
     override val backendName: String
         get() = _backendName
-    private var _backendName: String = "ORT CPU"
+    private var _backendName: String = "Model not loaded"
 
     private var lastRequestedAccelerator = Accelerator.AUTO
 
@@ -72,51 +75,54 @@ class OnnxInferenceEngine(
 
     private fun sessionFor(modelKey: InferenceEngine.ModelKey): OrtSession? {
         sessions[modelKey]?.let { return it }
-        val entry = manifest.entries[modelKey] ?: return null // model missing → bilinear fallback
-        val file = materializeModel(entry) ?: return null
-        return try {
-            val session = env.createSession(file.absolutePath, OrtSession.SessionOptions())
-            sessions[modelKey] = session
-            session
+        val handle = try {
+            modelProvider.load(modelKey)
         } catch (e: OutOfMemoryError) {
             throw e
         } catch (t: Throwable) {
-            null // HW-3: never crash on backend failure
+            markFallback("model load failed${reasonSuffix(t)}")
+            null
+        } ?: run {
+            markFallback("model unavailable (${modelKey.assetName})")
+            return null
         }
-    }
-
-    /** Assets → filesDir cache with sha256 verify (PRD §5.5). Null if missing/corrupt. */
-    private fun materializeModel(entry: ModelManifest.Entry): File? {
-        val cacheDir = File(context.filesDir, "models").apply { mkdirs() }
-        val f = File(cacheDir, entry.fileName)
-        if (f.exists() && sha256(f) == entry.sha256) return f
 
         return try {
-            context.assets.open("models/${entry.fileName}").use { input ->
-                f.outputStream().use { input.copyTo(it) }
-            }
-            if (entry.sha256.isEmpty() || sha256(f) == entry.sha256) f else {
-                f.delete()
+            val path = handle.modelPath
+            if (path.isNullOrBlank()) {
+                closeHandle(handle)
+                markFallback("invalid model handle (${modelKey.assetName})")
                 null
+            } else {
+                val session = env.createSession(path, OrtSession.SessionOptions())
+                sessions[modelKey] = session
+                handles += handle
+                _backendName = handle.backendName
+                session
             }
         } catch (e: OutOfMemoryError) {
             throw e
         } catch (t: Throwable) {
+            closeHandle(handle)
+            markFallback("${handle.backendName} session unavailable${reasonSuffix(t)}")
             null
         }
     }
 
-    private fun sha256(f: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        f.inputStream().use { stream ->
-            val buf = ByteArray(8192)
-            while (true) {
-                val n = stream.read(buf)
-                if (n <= 0) break
-                digest.update(buf, 0, n)
-            }
+    private fun reasonSuffix(t: Throwable): String =
+        t.message?.takeIf { it.isNotBlank() }?.let { ": ${it.take(80)}" } ?: ""
+
+    private fun markFallback(reason: String) {
+        _backendName = "Bicubic fallback ($reason)"
+    }
+
+    private fun closeHandle(handle: ModelHandle) {
+        try {
+            handle.close()
+        } catch (e: OutOfMemoryError) {
+            throw e
+        } catch (_: Throwable) {
         }
-        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     /** Catmull-Rom bicubic upscale so a missing model degrades gracefully (FR-1.3/§5.5). */
@@ -142,5 +148,15 @@ class OnnxInferenceEngine(
             }
         }
         sessions.clear()
+        handles.forEach(::closeHandle)
+        handles.clear()
+        (modelProvider as? AutoCloseable)?.let { provider ->
+            try {
+                provider.close()
+            } catch (e: OutOfMemoryError) {
+                throw e
+            } catch (_: Throwable) {
+            }
+        }
     }
 }
