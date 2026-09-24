@@ -74,6 +74,8 @@ data class EnhanceRequest(
     val scratchRepairStrength: Int = 50,
     val colorizeEnabled: Boolean = false,
     val colorizeStrength: Int = 50,
+    val cropPreset: CropPreset? = null,
+    val cacheLimitBytes: Long = DEFAULT_CACHE_LIMIT_BYTES,
 ) {
     init {
         require(faceRestoreStrength in 0..100) {
@@ -88,6 +90,15 @@ data class EnhanceRequest(
         require(colorizeStrength in 0..100) {
             "colorize strength must be 0..100, got $colorizeStrength"
         }
+        require(cacheLimitBytes in MIN_CACHE_LIMIT_BYTES..MAX_CACHE_LIMIT_BYTES) {
+            "cache limit must be $MIN_CACHE_LIMIT_BYTES..$MAX_CACHE_LIMIT_BYTES bytes, got $cacheLimitBytes"
+        }
+    }
+
+    companion object {
+        const val DEFAULT_CACHE_LIMIT_BYTES: Long = 500L * 1024L * 1024L
+        const val MIN_CACHE_LIMIT_BYTES: Long = 500L * 1024L * 1024L
+        const val MAX_CACHE_LIMIT_BYTES: Long = 2L * 1024L * 1024L * 1024L
     }
 }
 

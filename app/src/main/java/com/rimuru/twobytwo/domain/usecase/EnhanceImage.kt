@@ -17,6 +17,7 @@ import com.rimuru.twobytwo.domain.engine.TensorCodec
 import com.rimuru.twobytwo.domain.engine.TileBlender
 import com.rimuru.twobytwo.domain.engine.TilingManager
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
+import com.rimuru.twobytwo.domain.model.EnhanceResult
 import com.rimuru.twobytwo.domain.model.EngineMode
 import com.rimuru.twobytwo.domain.model.JobProgress
 import com.rimuru.twobytwo.domain.model.ProcessStep
@@ -89,6 +90,11 @@ class EnhanceImage(
             return (pixels * 4L).toInt()
         }
 
+        private fun validateOutputBufferSize(outWidth: Long, outHeight: Long) {
+            val pixels = outputPixels(outWidth, outHeight)
+            require(pixels <= Int.MAX_VALUE.toLong() / 4L) { "output buffer exceeds JVM array limit" }
+        }
+
         internal fun outputBufferSize(outWidth: Long, outHeight: Long, maxOutputMegapixels: Double): Int {
             require(maxOutputMegapixels.isFinite() && maxOutputMegapixels > 0.0) {
                 "max output megapixels must be finite and positive"
@@ -114,6 +120,7 @@ class EnhanceImage(
         maxMegapixels: Int = 48,
         sharpenMaxMegapixels: Double = 24.0,
         isCancelled: () -> Boolean = { false },
+        onItemCompleted: (batchIndex: Int, result: EnhanceResult) -> Unit = { _, _ -> },
     ): Flow<JobProgress> = channelFlow {
         withContext(Dispatchers.Default) {
             val total = request.inputUris.size
@@ -133,7 +140,7 @@ class EnhanceImage(
 
                 val preparing = JobProgress(ProcessStep.PREPARING, batchIndex = batchIndex, batchTotal = total)
                 var lastOverall = preparing.overall
-                try {
+                val itemResult: EnhanceResult = try {
                     send(preparing)
                     val processed = processOne(
                         request = request,
@@ -165,12 +172,18 @@ class EnhanceImage(
                     )
                     if (outputUri == null) outputUri = processed.outputUri
                     succeeded++
+                    EnhanceResult.Success(
+                        outputUri = processed.outputUri,
+                        width = processed.width,
+                        height = processed.height,
+                        backendUsed = processed.backendUsed,
+                        skippedSmallFaces = processed.skippedSmallFaces,
+                    )
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: OutOfMemoryError) {
                     throw e
                 } catch (t: Throwable) {
-                    // Per-image isolation: log-and-continue, batch survives (batch stability)
                     val message = t.message?.takeIf { it.isNotBlank() }
                         ?: t::class.java.simpleName
                         ?: "Enhancement failed"
@@ -189,7 +202,10 @@ class EnhanceImage(
                             overallOverride = lastOverall,
                         ),
                     )
+                    EnhanceResult.Failure(message, t)
                 }
+                onItemCompleted(batchIndex, itemResult)
+
             }
 
             send(
@@ -231,24 +247,33 @@ class EnhanceImage(
             EngineMode.CREATIVE ->
                 if (scale == 4) InferenceEngine.ModelKey.CREATIVE_X4 else InferenceEngine.ModelKey.CREATIVE_X2
         }
+        if (request.cropPreset == null) {
+            validateOutputBufferSize(
+                dimensions.width.toLong() * scale,
+                dimensions.height.toLong() * scale,
+            )
+        }
 
+        val decoded = imageIo.decode(inputUri, maxMegapixels)
+        checkPassCancellation(cancellationRequested)
+        val working = request.cropPreset?.let { preset ->
+            CropProcessor.centerCrop(RgbaImage(decoded.rgba, decoded.width, decoded.height), preset)
+        } ?: RgbaImage(decoded.rgba, decoded.width, decoded.height)
         val outputBytes = outputBufferSize(
-            dimensions.width.toLong() * scale,
-            dimensions.height.toLong() * scale,
+            working.width.toLong() * scale,
+            working.height.toLong() * scale,
         )
         checkPassCancellation(cancellationRequested)
         val tiling = TilingManager(
-            imageWidth = dimensions.width,
-            imageHeight = dimensions.height,
+            imageWidth = working.width,
+            imageHeight = working.height,
             scale = scale,
             tileSize = tileConfig.tileSize,
             overlap = TilingManager.overlapFor(tileConfig.tileSize),
         )
         checkPassCancellation(cancellationRequested)
-        val decoded = imageIo.decode(inputUri, maxMegapixels)
-        checkPassCancellation(cancellationRequested)
         val passProvider = modelProvider ?: NoModelProvider
-        var restored = RgbaImage(decoded.rgba, decoded.width, decoded.height)
+        var restored = working
         val passStatuses = mutableListOf<String>()
         if (!request.denoise.isOff) {
             checkPassCancellation(cancellationRequested)
@@ -407,7 +432,14 @@ class EnhanceImage(
         )
         checkPassCancellation(cancellationRequested)
         val encodedUri = imageIo.encode(out, tiling.outWidth, tiling.outHeight, outputUri, format, inputUri)
-        return ProcessedImage(encodedUri, backendWithPasses(engine.backendName, passStatuses), skippedSmallFaces)
+        require(encodedUri.isNotBlank()) { "encode returned a blank output URI" }
+        return ProcessedImage(
+            outputUri = encodedUri,
+            width = tiling.outWidth,
+            height = tiling.outHeight,
+            backendUsed = backendWithPasses(engine.backendName, passStatuses),
+            skippedSmallFaces = skippedSmallFaces,
+        )
     }
 
     private fun backendWithPasses(backend: String, passStatuses: List<String>): String =
@@ -415,6 +447,8 @@ class EnhanceImage(
 
     private data class ProcessedImage(
         val outputUri: String,
+        val width: Int,
+        val height: Int,
         val backendUsed: String,
         val skippedSmallFaces: Int,
     )

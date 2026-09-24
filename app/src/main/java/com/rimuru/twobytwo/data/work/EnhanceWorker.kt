@@ -11,16 +11,20 @@ import androidx.work.Data
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.rimuru.twobytwo.R
+import com.rimuru.twobytwo.data.cache.RenderCacheStore
 import com.rimuru.twobytwo.data.device.DeviceTiers
+import com.rimuru.twobytwo.data.history.FileHistoryStore
 import com.rimuru.twobytwo.data.engine.ModelManifest
 import com.rimuru.twobytwo.data.engine.ModelRegistry
 import com.rimuru.twobytwo.data.engine.OnnxInferenceEngine
 import com.rimuru.twobytwo.data.media.MediaStoreImageIo
+import com.rimuru.twobytwo.domain.model.EnhanceResult
 import com.rimuru.twobytwo.domain.model.JobProgress
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
 import kotlinx.coroutines.CancellationException
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -50,6 +54,11 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         try {
             setForeground(createForegroundInfo(applicationContext.getString(R.string.proc_step_preparing)))
 
+            val historyStore = FileHistoryStore(applicationContext)
+            val cacheStore = RenderCacheStore(File(applicationContext.cacheDir, "renders"), request.cacheLimitBytes)
+            val persistenceService = WorkflowPersistenceService(historyStore, cacheStore)
+            val runId = id.toString()
+            val settingsJson = EnhanceRequestJson.encodeSettings(request)
             val useCase = EnhanceImage(
                 engine,
                 MediaStoreImageIo(applicationContext),
@@ -60,6 +69,17 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                 request = request,
                 outputNameFor = { index, _ -> "${baseName}_${index + 1}.png" },
                 format = EnhanceImage.OutputFormat.PNG,
+                onItemCompleted = { batchIndex, result ->
+                    if (result is EnhanceResult.Success) {
+                        persistenceService.saveCompletedItem(
+                            runId = runId,
+                            batchIndex = batchIndex,
+                            sourceUri = request.inputUris[batchIndex],
+                            settingsJson = settingsJson,
+                            result = result,
+                        )
+                    }
+                },
             )
 
             var last: JobProgress? = null

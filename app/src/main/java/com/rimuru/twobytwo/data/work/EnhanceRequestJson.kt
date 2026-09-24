@@ -1,29 +1,23 @@
 package com.rimuru.twobytwo.data.work
 
 import com.rimuru.twobytwo.domain.model.Accelerator
+import com.rimuru.twobytwo.domain.model.CropPreset
 import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.EngineMode
 import org.json.JSONArray
 import org.json.JSONObject
+import java.math.BigDecimal
+import java.math.BigInteger
 
 internal object EnhanceRequestJson {
     fun encode(request: EnhanceRequest): String = JSONObject().apply {
         put("inputUris", JSONArray(request.inputUris))
-        put("scale", request.scale.multiplier)
-        put("mode", request.mode.name)
-        put("denoise", request.denoise.percent)
-        put("faceRestore", request.faceRestoreEnabled)
-        put("faceStrength", request.faceRestoreStrength)
-        put("accelerator", request.accelerator.name)
-        put("neural", request.useNeuralEngine)
-        put("sharpen", request.sharpen)
-        put("deblurEnabled", request.deblurEnabled)
-        put("deblurStrength", request.deblurStrength)
-        put("scratchRepairEnabled", request.scratchRepairEnabled)
-        put("scratchRepairStrength", request.scratchRepairStrength)
-        put("colorizeEnabled", request.colorizeEnabled)
-        put("colorizeStrength", request.colorizeStrength)
+        putSettings(this, request)
+    }.toString()
+
+    fun encodeSettings(request: EnhanceRequest): String = JSONObject().apply {
+        putSettings(this, request)
     }.toString()
 
     fun decode(json: String?): EnhanceRequest? {
@@ -49,7 +43,56 @@ internal object EnhanceRequestJson {
                 scratchRepairStrength = o.optInt("scratchRepairStrength", 50),
                 colorizeEnabled = o.optBoolean("colorizeEnabled", false),
                 colorizeStrength = o.optInt("colorizeStrength", 50),
+                cropPreset = parseCropPreset(o),
+                cacheLimitBytes = parseCacheLimit(o),
             )
         }.getOrNull()
+    }
+
+    private fun putSettings(json: JSONObject, request: EnhanceRequest) {
+        json.put("scale", request.scale.multiplier)
+        json.put("mode", request.mode.name)
+        json.put("denoise", request.denoise.percent)
+        json.put("faceRestore", request.faceRestoreEnabled)
+        json.put("faceStrength", request.faceRestoreStrength)
+        json.put("accelerator", request.accelerator.name)
+        json.put("neural", request.useNeuralEngine)
+        json.put("sharpen", request.sharpen)
+        json.put("deblurEnabled", request.deblurEnabled)
+        json.put("deblurStrength", request.deblurStrength)
+        json.put("scratchRepairEnabled", request.scratchRepairEnabled)
+        json.put("scratchRepairStrength", request.scratchRepairStrength)
+        json.put("colorizeEnabled", request.colorizeEnabled)
+        json.put("colorizeStrength", request.colorizeStrength)
+        json.put("cropPreset", request.cropPreset?.name ?: JSONObject.NULL)
+        json.put("cacheLimitBytes", request.cacheLimitBytes)
+    }
+
+    private fun parseCropPreset(json: JSONObject): CropPreset? {
+        if (!json.has("cropPreset") || json.isNull("cropPreset")) return null
+        val name = json.opt("cropPreset") as? String ?: throw IllegalArgumentException("crop preset must be a string")
+        return CropPreset.entries.firstOrNull { it.name == name }
+            ?: throw IllegalArgumentException("unknown crop preset: $name")
+    }
+
+    private fun parseCacheLimit(json: JSONObject): Long {
+        if (!json.has("cacheLimitBytes") || json.isNull("cacheLimitBytes")) {
+            return EnhanceRequest.DEFAULT_CACHE_LIMIT_BYTES
+        }
+        val value = json.opt("cacheLimitBytes") as? Number
+            ?: throw IllegalArgumentException("cache limit must be a number")
+        val limit = when (value) {
+            is Byte, is Short, is Int, is Long -> value.toLong()
+            is BigInteger -> value.longValueExact()
+            is BigDecimal -> {
+                if (value.scale() > 0) throw IllegalArgumentException("cache limit must be integral")
+                value.toBigIntegerExact().longValueExact()
+            }
+            else -> throw IllegalArgumentException("cache limit must be integral")
+        }
+        require(limit in EnhanceRequest.MIN_CACHE_LIMIT_BYTES..EnhanceRequest.MAX_CACHE_LIMIT_BYTES) {
+            "cache limit out of range: $limit"
+        }
+        return limit
     }
 }
