@@ -669,7 +669,7 @@ fun ComparisonViewer(
                 .fillMaxSize()
                 .drawWithContent {
                     clipRect(right = size.width * splitFraction) {
-                        drawContent()
+                        this@drawWithContent.drawContent()
                     }
                 },
         ) {
