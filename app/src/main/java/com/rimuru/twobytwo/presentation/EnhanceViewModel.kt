@@ -25,6 +25,19 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
 
+enum class BatchItemStatus {
+    QUEUED,
+    PROCESSING,
+    SUCCEEDED,
+    FAILED,
+    CANCELLED,
+}
+
+data class BatchItemState(
+    val uri: String,
+    val status: BatchItemStatus = BatchItemStatus.QUEUED,
+)
+
 /**
  * MVI: single immutable UiState, user intents reduce via [onIntent] (UX-2).
  */
@@ -33,6 +46,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
     data class UiState(
         // S1 — batch: first uri drives preview, list drives the job
         val pickedUris: List<String> = emptyList(),
+        val batchItems: List<BatchItemState> = emptyList(),
         val pickedWidth: Int = 0,
         val pickedHeight: Int = 0,
         // S2 config
@@ -77,10 +91,19 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         when (intent) {
             is Intent.PickPhotos -> _state.update {
                 if (intent.uris.isNotEmpty()) {
-                    it.copy(pickedUris = intent.uris.map(Uri::toString), outputUri = null, progress = null, error = null)
+                    val pickedUris = intent.uris.map(Uri::toString)
+                    it.copy(
+                        pickedUris = pickedUris,
+                        batchItems = initialBatchItems(pickedUris),
+                        outputUri = null,
+                        progress = null,
+                        error = null,
+                    )
                 } else it
             }
-            Intent.ClearPhoto -> _state.update { it.copy(pickedUris = emptyList(), outputUri = null, progress = null) }
+            Intent.ClearPhoto -> _state.update {
+                it.copy(pickedUris = emptyList(), batchItems = emptyList(), outputUri = null, progress = null)
+            }
             is Intent.SetScale -> _state.update { it.copy(scale = intent.scale) }
             is Intent.SetMode -> _state.update { it.copy(mode = intent.mode) }
             is Intent.SetDenoise -> _state.update { it.copy(denoise = intent.percent.coerceIn(0, 100)) }
@@ -124,6 +147,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                 jobId = work.id,
                 outputUri = null,
                 progress = initialProgress(s.pickedUris.size),
+                batchItems = initialBatchItems(s.pickedUris),
                 backendUsed = null,
             )
         }
@@ -150,6 +174,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                                 batchIndex = p.getInt(EnhanceWorker.KEY_BATCH_INDEX, 0),
                                 batchTotal = p.getInt(EnhanceWorker.KEY_BATCH_TOTAL, 1),
                                 skippedSmallFaces = p.getInt(EnhanceWorker.KEY_SKIPPED_SMALL_FACES, 0),
+                                error = p.getString(EnhanceWorker.KEY_ERROR)?.takeIf { it.isNotBlank() },
                                 overallOverride = p.getString(EnhanceWorker.KEY_OVERALL_OVERRIDE)?.toFloatOrNull(),
                             )
                             _state.update { runningState(it, progress) }
@@ -201,7 +226,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                             )
                         }
                     }
-                    WorkInfo.State.CANCELLED -> _state.update { it.copy(progress = null) }
+                    WorkInfo.State.CANCELLED -> _state.update { cancelledState(it) }
                     else -> {}
                 }
             }
@@ -223,10 +248,57 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         internal fun firstNonBlank(vararg values: String?): String? =
             values.firstOrNull { !it.isNullOrBlank() }
 
-        internal fun runningState(state: UiState, progress: JobProgress): UiState = state.copy(
-            progress = progress,
-            backendUsed = progress.backendUsed?.takeIf { it.isNotBlank() } ?: state.backendUsed,
-        )
+        internal fun initialBatchItems(uris: List<String>): List<BatchItemState> =
+            uris.map { BatchItemState(it) }
+
+        internal fun updateBatchItems(
+            items: List<BatchItemState>,
+            progress: JobProgress,
+        ): List<BatchItemState> {
+            if (items.isEmpty()) return items
+            val total = progress.batchTotal.coerceAtLeast(1)
+            val index = progress.batchIndex.coerceIn(0, minOf(items.lastIndex, total - 1))
+            val currentStatus = when {
+                progress.error != null -> BatchItemStatus.FAILED
+                progress.step == ProcessStep.DONE -> BatchItemStatus.SUCCEEDED
+                else -> BatchItemStatus.PROCESSING
+            }
+            return items.mapIndexed { itemIndex, item ->
+                when {
+                    itemIndex < index &&
+                        item.status != BatchItemStatus.FAILED &&
+                        item.status != BatchItemStatus.CANCELLED -> item.copy(status = BatchItemStatus.SUCCEEDED)
+                    itemIndex == index &&
+                        (item.status == BatchItemStatus.QUEUED || item.status == BatchItemStatus.PROCESSING) ->
+                        item.copy(status = currentStatus)
+                    else -> item
+                }
+            }
+        }
+
+        internal fun runningState(state: UiState, progress: JobProgress): UiState {
+            val items = state.batchItems.ifEmpty { initialBatchItems(state.pickedUris) }
+            return state.copy(
+                progress = progress,
+                batchItems = updateBatchItems(items, progress),
+                backendUsed = progress.backendUsed?.takeIf { it.isNotBlank() } ?: state.backendUsed,
+            )
+        }
+
+        internal fun cancelledState(state: UiState): UiState {
+            val items = state.batchItems.ifEmpty { initialBatchItems(state.pickedUris) }
+            val index = state.progress?.batchIndex?.coerceIn(0, items.lastIndex.coerceAtLeast(0)) ?: 0
+            return state.copy(
+                progress = null,
+                batchItems = items.mapIndexed { itemIndex, item ->
+                    when {
+                        item.status == BatchItemStatus.FAILED -> item
+                        itemIndex < index -> item.copy(status = BatchItemStatus.SUCCEEDED)
+                        else -> item.copy(status = BatchItemStatus.CANCELLED)
+                    }
+                },
+            )
+        }
 
         internal fun succeededState(
             state: UiState,
@@ -243,14 +315,36 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                     outputUri = outputUri,
                     skippedSmallFaces = skippedSmallFaces,
                 ),
+                batchItems = state.batchItems.ifEmpty { initialBatchItems(state.pickedUris) }
+                    .map {
+                        if (it.status == BatchItemStatus.FAILED || it.status == BatchItemStatus.CANCELLED) {
+                            it
+                        } else {
+                            it.copy(status = BatchItemStatus.SUCCEEDED)
+                        }
+                    },
                 backendUsed = backendUsed,
             )
         }
 
-        internal fun failedState(state: UiState, error: String, backend: String?): UiState = state.copy(
-            progress = null,
-            backendUsed = backend?.takeIf { it.isNotBlank() } ?: state.backendUsed,
-            error = error,
-        )
+        internal fun failedState(state: UiState, error: String, backend: String?): UiState {
+            val items = state.batchItems.ifEmpty { initialBatchItems(state.pickedUris) }
+            return state.copy(
+                progress = null,
+                batchItems = items.map {
+                    if (
+                        it.status == BatchItemStatus.SUCCEEDED ||
+                        it.status == BatchItemStatus.FAILED ||
+                        it.status == BatchItemStatus.CANCELLED
+                    ) {
+                        it
+                    } else {
+                        it.copy(status = BatchItemStatus.FAILED)
+                    }
+                },
+                backendUsed = backend?.takeIf { it.isNotBlank() } ?: state.backendUsed,
+                error = error,
+            )
+        }
     }
 }

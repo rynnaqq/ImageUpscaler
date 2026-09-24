@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,6 +24,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -82,6 +85,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -143,14 +147,14 @@ fun AppRoot(initialSharedUri: String?) {
     }
 }
 
-/** S1 — Home / photo input (Photo Picker, multi-select up to 20 for batches). */
+/** S1 — Home / photo input (Photo Picker, multi-select up to 50 for batches). */
 @Composable
 fun HomeScreen(
     state: EnhanceViewModel.UiState,
     onPick: (List<android.net.Uri>) -> Unit,
 ) {
     val pickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia(maxItems = 20),
+        androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia(maxItems = 50),
     ) { uris -> if (uris.isNotEmpty()) onPick(uris) }
 
     Scaffold(containerColor = MaterialTheme.colorScheme.surface) { padding ->
@@ -520,7 +524,48 @@ fun ProcessingScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Spacer(Modifier.height(40.dp))
+            if (state.batchItems.isNotEmpty()) {
+                Spacer(Modifier.height(16.dp))
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentPadding = PaddingValues(vertical = 4.dp),
+                ) {
+                    itemsIndexed(
+                        items = state.batchItems,
+                        key = { index, item -> "$index:${item.uri}" },
+                    ) { index, item ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "${index + 1}",
+                                modifier = Modifier.width(28.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                            Text(
+                                text = item.uri.substringAfterLast('/').ifBlank { item.uri },
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(
+                                text = item.status.name,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = when (item.status) {
+                                    BatchItemStatus.QUEUED, BatchItemStatus.CANCELLED ->
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    BatchItemStatus.PROCESSING, BatchItemStatus.SUCCEEDED ->
+                                        MaterialTheme.colorScheme.primary
+                                    BatchItemStatus.FAILED -> MaterialTheme.colorScheme.error
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(24.dp))
             OutlinedButton(onClick = { confirmCancel = true }, shape = RoundedCornerShape(12.dp)) {
                 Text(stringResource(R.string.proc_cancel))
             }

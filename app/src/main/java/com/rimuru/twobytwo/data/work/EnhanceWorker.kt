@@ -91,10 +91,17 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                         KEY_OUTPUT_URI to outputUri,
                         KEY_BACKEND to lastBackend,
                         KEY_SKIPPED_SMALL_FACES to (last?.skippedSmallFaces ?: 0),
+                        KEY_BATCH_INDEX to (last?.batchIndex ?: 0),
+                        KEY_BATCH_TOTAL to (last?.batchTotal ?: 1),
                     ),
                 )
             } else {
-                failure(last?.error, last?.backendUsed ?: lastBackend)
+                failure(
+                    last?.error,
+                    last?.backendUsed ?: lastBackend,
+                    last?.batchIndex,
+                    last?.batchTotal,
+                )
             }
         } catch (e: CancellationException) {
             throw e
@@ -107,15 +114,23 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         }
     }
 
-    private fun failure(message: String?, backend: String? = null): Result = Result.failure(
-        androidx.work.workDataOf(
-            KEY_ERROR to (
+    private fun failure(
+        message: String?,
+        backend: String? = null,
+        batchIndex: Int? = null,
+        batchTotal: Int? = null,
+    ): Result {
+        val data = Data.Builder()
+            .putString(
+                KEY_ERROR,
                 message?.takeIf { it.isNotBlank() }?.take(200)
-                    ?: applicationContext.getString(R.string.error_job_failed)
-                ),
-            KEY_BACKEND to backend.orEmpty(),
-        ),
-    )
+                    ?: applicationContext.getString(R.string.error_job_failed),
+            )
+            .putString(KEY_BACKEND, backend.orEmpty())
+        batchIndex?.let { data.putInt(KEY_BATCH_INDEX, it) }
+        batchTotal?.let { data.putInt(KEY_BATCH_TOTAL, it) }
+        return Result.failure(data.build())
+    }
 
     private fun stepText(p: JobProgress): String {
         val batchPrefix = if (p.batchTotal > 1) "(${p.batchIndex + 1}/${p.batchTotal}) " else ""
