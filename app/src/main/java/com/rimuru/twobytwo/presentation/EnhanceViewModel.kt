@@ -123,7 +123,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             it.copy(
                 jobId = work.id,
                 outputUri = null,
-                progress = JobProgress(ProcessStep.PREPARING),
+                progress = initialProgress(s.pickedUris.size),
                 backendUsed = null,
             )
         }
@@ -150,6 +150,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                                 batchIndex = p.getInt(EnhanceWorker.KEY_BATCH_INDEX, 0),
                                 batchTotal = p.getInt(EnhanceWorker.KEY_BATCH_TOTAL, 1),
                                 skippedSmallFaces = p.getInt(EnhanceWorker.KEY_SKIPPED_SMALL_FACES, 0),
+                                overallOverride = p.getString(EnhanceWorker.KEY_OVERALL_OVERRIDE)?.toFloatOrNull(),
                             )
                             _state.update { runningState(it, progress) }
                         }
@@ -212,6 +213,13 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        internal fun initialProgress(batchTotal: Int): JobProgress =
+            JobProgress(
+                step = ProcessStep.PREPARING,
+                batchIndex = 0,
+                batchTotal = batchTotal.coerceAtLeast(1),
+            )
+
         internal fun firstNonBlank(vararg values: String?): String? =
             values.firstOrNull { !it.isNullOrBlank() }
 

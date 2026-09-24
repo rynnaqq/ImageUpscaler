@@ -131,8 +131,10 @@ class EnhanceImage(
                     return@withContext
                 }
 
+                val preparing = JobProgress(ProcessStep.PREPARING, batchIndex = batchIndex, batchTotal = total)
+                var lastOverall = preparing.overall
                 try {
-                    send(JobProgress(ProcessStep.PREPARING, batchIndex = batchIndex, batchTotal = total))
+                    send(preparing)
                     val processed = processOne(
                         request = request,
                         inputUri = inputUri,
@@ -145,6 +147,7 @@ class EnhanceImage(
                         batchTotal = total,
                         isCancelled = isCancelled,
                     ) { progress ->
+                        lastOverall = progress.overall
                         send(progress)
                     }
                     backendUsed = processed.backendUsed
@@ -171,6 +174,7 @@ class EnhanceImage(
                             batchTotal = total,
                             backendUsed = "error: ${message.take(80)}",
                             error = message,
+                            overallOverride = lastOverall,
                         ),
                     )
                 }

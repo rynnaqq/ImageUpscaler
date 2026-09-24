@@ -19,6 +19,45 @@ import org.junit.Test
 class EnhanceFailureTest {
 
     @Test
+    fun `failure progress cannot regress after partial first image work`() = runBlocking {
+        val imageIo = object : EnhanceImage.ImageIo {
+            override fun measure(uri: String, maxMegapixels: Int) = EnhanceImage.Dimensions(1, 1)
+
+            override fun decode(uri: String, maxMegapixels: Int) =
+                EnhanceImage.DecodedImage(ByteArray(4), 1, 1)
+
+            override fun encode(
+                rgba: ByteArray,
+                width: Int,
+                height: Int,
+                destinationUri: String,
+                format: EnhanceImage.OutputFormat,
+                exifSourceUri: String?,
+            ): String {
+                if (exifSourceUri == "content://input/first") error("first encode failed")
+                return "content://output/$destinationUri"
+            }
+        }
+
+        val progress = EnhanceImage(testEngine(), imageIo).run(
+            request = EnhanceRequest(
+                inputUris = listOf("content://input/first", "content://input/second"),
+                faceRestoreEnabled = true,
+                sharpen = false,
+            ),
+            outputNameFor = { index, _ -> "output-$index.png" },
+        ).toList()
+
+        val overall = progress.map { it.overall }
+        assertTrue(overall.zipWithNext().all { (before, after) -> after >= before })
+        val failure = progress.single { it.error == "first encode failed" }
+        val previous = progress[progress.indexOf(failure) - 1]
+        assertEquals(ProcessStep.BLENDING, previous.step)
+        assertEquals(previous.overall, failure.overall, 0f)
+        assertEquals(1f, progress.last().overall, 0f)
+    }
+
+    @Test
     fun `ordinary image failure is reported and batch continues`() = runBlocking {
         val decodedUris = mutableListOf<String>()
         val imageIo = object : EnhanceImage.ImageIo {

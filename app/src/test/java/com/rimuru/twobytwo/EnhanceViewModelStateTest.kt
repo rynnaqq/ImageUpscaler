@@ -10,6 +10,15 @@ import org.junit.Test
 class EnhanceViewModelStateTest {
 
     @Test
+    fun `initial preparing progress uses the picked batch total`() {
+        val progress = EnhanceViewModel.initialProgress(batchTotal = 2)
+
+        assertEquals(ProcessStep.PREPARING, progress.step)
+        assertEquals(0, progress.batchIndex)
+        assertEquals(2, progress.batchTotal)
+    }
+
+    @Test
     fun `progress data wins when terminal output has a blank backend`() {
         assertEquals(
             "Bicubic fallback (model unavailable)",

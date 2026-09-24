@@ -104,10 +104,12 @@ data class JobProgress(
     val batchIndex: Int = 0,
     val batchTotal: Int = 1,
     val skippedSmallFaces: Int = 0,
+    val overallOverride: Float? = null,
 ) {
     val overall: Float
         get() {
             if (step == ProcessStep.DONE) return 1f
+            overallOverride?.let { return it.coerceIn(0f, 1f) }
             val total = batchTotal.coerceAtLeast(1)
             val itemProgress = when (step) {
                 ProcessStep.PREPARING -> 0.02f

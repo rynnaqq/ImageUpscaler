@@ -75,6 +75,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                         KEY_BATCH_INDEX to progress.batchIndex,
                         KEY_BATCH_TOTAL to progress.batchTotal,
                         KEY_SKIPPED_SMALL_FACES to progress.skippedSmallFaces,
+                        KEY_OVERALL_OVERRIDE to progress.overallOverride?.toString().orEmpty(),
                         KEY_OUTPUT_URI to progress.outputUri.orEmpty(),
                         KEY_ERROR to progress.error.orEmpty(),
                         KEY_BATCH_SUCCEEDED to progress.backendUsed?.takeLastWhile { it.isDigit() }.orEmpty(),
@@ -166,6 +167,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         const val KEY_BATCH_INDEX = "batchIndex"
         const val KEY_BATCH_TOTAL = "batchTotal"
         const val KEY_SKIPPED_SMALL_FACES = "skippedSmallFaces"
+        const val KEY_OVERALL_OVERRIDE = "overallOverride"
         const val KEY_OUTPUT_URI = "outputUri"
         const val KEY_ERROR = "error"
         const val KEY_BATCH_SUCCEEDED = "batchSucceeded"
