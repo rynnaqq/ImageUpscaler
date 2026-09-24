@@ -134,6 +134,23 @@ class HistoryStoreTest {
     }
 
     @Test
+    fun `duplicate settings leaves an existing reservation untouched`() {
+        val root = Files.createTempDirectory("history-reservation").toFile()
+        val store = FileHistoryStore(root)
+        val parent = record("job-parent", createdAt = 10L)
+        val reservation = File(root, "job-child.json")
+
+        store.save(parent)
+        assertTrue(reservation.createNewFile())
+
+        val duplicate = store.duplicateSettings(parent.id, reservation.nameWithoutExtension)
+
+        assertNull(duplicate)
+        assertTrue(reservation.exists())
+        assertEquals(0L, reservation.length())
+    }
+
+    @Test
     fun `duplicate settings returns null when the parent is missing`() {
         val root = Files.createTempDirectory("history-missing-parent").toFile()
         val store = FileHistoryStore(root)

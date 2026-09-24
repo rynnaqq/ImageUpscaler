@@ -24,7 +24,7 @@ class FileHistoryStore(private val root: File) : HistoryStore {
     constructor(context: Context) : this(File(context.filesDir, DIRECTORY_NAME))
 
     override fun save(record: HistoryRecord) {
-        write(record, replaceExisting = true)
+        writeReplacing(record)
     }
 
     override fun list(): List<HistoryRecord> {
@@ -56,28 +56,61 @@ class FileHistoryStore(private val root: File) : HistoryStore {
             createdAt = System.currentTimeMillis(),
             parentId = parent.id,
         )
-        return try {
-            write(child, replaceExisting = false)
-            child
-        } catch (_: FileAlreadyExistsException) {
-            null
-        }
+        return if (writeNew(child)) child else null
     }
 
-    private fun write(record: HistoryRecord, replaceExisting: Boolean) {
-        val id = validateId(record.id)
-        record.parentId?.let(::validateId)
+    private fun writeReplacing(record: HistoryRecord) {
+        val id = validateRecord(record)
         ensureRoot()
         val target = fileFor(id)
-        if (!replaceExisting && target.exists()) {
-            throw FileAlreadyExistsException(target.toString())
-        }
         val temp = Files.createTempFile(root.toPath(), ".$id-", ".tmp")
         try {
             Files.write(temp, encode(record).toByteArray(StandardCharsets.UTF_8))
-            moveAtomically(temp, target.toPath(), replaceExisting)
+            moveAtomically(temp, target.toPath())
         } finally {
             Files.deleteIfExists(temp)
+        }
+    }
+
+    private fun writeNew(record: HistoryRecord): Boolean {
+        val id = validateRecord(record)
+        ensureRoot()
+        val target = fileFor(id).toPath()
+        if (!reserve(target)) return false
+
+        var committed = false
+        var temp: Path? = null
+        try {
+            temp = Files.createTempFile(root.toPath(), ".$id-", ".tmp")
+            Files.write(temp, encode(record).toByteArray(StandardCharsets.UTF_8))
+            moveAtomically(temp, target)
+            committed = true
+        } finally {
+            try {
+                temp?.let { Files.deleteIfExists(it) }
+            } finally {
+                if (!committed) deleteReservation(target)
+            }
+        }
+        return true
+    }
+
+    private fun validateRecord(record: HistoryRecord): String {
+        val id = validateId(record.id)
+        record.parentId?.let(::validateId)
+        return id
+    }
+
+    private fun reserve(target: Path): Boolean = try {
+        Files.createFile(target)
+        true
+    } catch (_: FileAlreadyExistsException) {
+        false
+    }
+
+    private fun deleteReservation(target: Path) {
+        if (Files.exists(target) && Files.size(target) == 0L) {
+            Files.deleteIfExists(target)
         }
     }
 
@@ -181,18 +214,14 @@ class FileHistoryStore(private val root: File) : HistoryStore {
     private fun isValidId(id: String): Boolean =
         id.length in 1..MAX_ID_LENGTH && ID_PATTERN.matches(id) && id != "." && id != ".."
 
-    private fun moveAtomically(source: Path, target: Path, replaceExisting: Boolean) {
+    private fun moveAtomically(source: Path, target: Path) {
         try {
-            if (replaceExisting) {
-                Files.move(
-                    source,
-                    target,
-                    StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING,
-                )
-            } else {
-                Files.move(source, target, StandardCopyOption.ATOMIC_MOVE)
-            }
+            Files.move(
+                source,
+                target,
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
         } catch (e: AtomicMoveNotSupportedException) {
             throw IOException("Atomic history move is not supported for: $target", e)
         } catch (e: UnsupportedOperationException) {
