@@ -279,12 +279,13 @@ fun ConfigScreen(
             title = stringResource(R.string.config_scale),
             description = stringResource(R.string.config_scale_desc),
         ) {
+            val scales = listOf(ScaleFactor.X2, ScaleFactor.X4)
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                ScaleFactor.entries.forEachIndexed { i, sf ->
+                scales.forEachIndexed { i, sf ->
                     SegmentedButton(
                         selected = state.scale == sf,
                         onClick = { onIntent(EnhanceViewModel.Intent.SetScale(sf)) },
-                        shape = SegmentedButtonDefaults.itemShape(i, ScaleFactor.entries.size),
+                        shape = SegmentedButtonDefaults.itemShape(i, scales.size),
                     ) { Text("${sf.multiplier}x") }
                 }
             }

@@ -29,6 +29,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+internal fun parseScaleFactor(value: Int): ScaleFactor = when (value) {
+    4 -> ScaleFactor.X4
+    8 -> ScaleFactor.X8
+    else -> ScaleFactor.X2
+}
+
 /**
  * Long-running restore job (PRD §5.7): foreground dataSync worker, progress via
  * setProgress → Flow, cancelable. Batch-aware: request carries a URI list; each
@@ -141,7 +147,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         for (i in 0 until arr.length()) uris += arr.getString(i)
         EnhanceRequest(
             inputUris = uris,
-            scale = if (o.getInt("scale") == 4) ScaleFactor.X4 else ScaleFactor.X2,
+            scale = parseScaleFactor(o.getInt("scale")),
             mode = if (o.getString("mode") == "PRECISION") EngineMode.PRECISION else EngineMode.CREATIVE,
             denoise = DenoiseStrength(o.getInt("denoise")),
             faceRestoreEnabled = o.getBoolean("faceRestore"),

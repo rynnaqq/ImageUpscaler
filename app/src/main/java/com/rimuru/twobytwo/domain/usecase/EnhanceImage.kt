@@ -175,11 +175,12 @@ class EnhanceImage(
         maxOutputMegapixels: Double,
         emit: (JobProgress) -> Unit,
     ): String {
-        val dimensions = imageIo.measure(inputUri, maxMegapixels)
         val scale = when (request.scale) {
             ScaleFactor.X2 -> 2
             ScaleFactor.X4 -> 4
+            ScaleFactor.X8 -> throw UnsupportedOperationException("8x enhancement is not yet supported")
         }
+        val dimensions = imageIo.measure(inputUri, maxMegapixels)
         val modelKey = when (request.mode) {
             EngineMode.PRECISION ->
                 if (scale == 2) InferenceEngine.ModelKey.PRECISION_X2 else InferenceEngine.ModelKey.PRECISION_X4
