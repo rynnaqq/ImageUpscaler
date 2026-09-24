@@ -78,6 +78,8 @@ class OnnxInferenceEngine(
             val session = env.createSession(file.absolutePath, OrtSession.SessionOptions())
             sessions[modelKey] = session
             session
+        } catch (e: OutOfMemoryError) {
+            throw e
         } catch (t: Throwable) {
             null // HW-3: never crash on backend failure
         }
@@ -97,6 +99,8 @@ class OnnxInferenceEngine(
                 f.delete()
                 null
             }
+        } catch (e: OutOfMemoryError) {
+            throw e
         } catch (t: Throwable) {
             null
         }
@@ -129,7 +133,14 @@ class OnnxInferenceEngine(
     )
 
     override fun close() {
-        sessions.values.forEach { runCatching { it.close() } }
+        sessions.values.forEach {
+            try {
+                it.close()
+            } catch (e: OutOfMemoryError) {
+                throw e
+            } catch (_: Throwable) {
+            }
+        }
         sessions.clear()
     }
 }
