@@ -39,6 +39,13 @@ data class DenoiseStrength(val percent: Int) {
     }
 }
 
+data class CropRect(
+    val left: Int,
+    val top: Int,
+    val width: Int,
+    val height: Int,
+)
+
 data class PassRequest(
     val id: String,
     val strength: Int,
