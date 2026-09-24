@@ -4,6 +4,7 @@ import android.content.Context
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.engine.ModelHandle
 import com.rimuru.twobytwo.domain.engine.ModelProvider
+import kotlinx.coroutines.CancellationException
 import java.io.File
 import java.io.InputStream
 import java.security.MessageDigest
@@ -12,7 +13,7 @@ class ModelRegistry(
     private val manifest: ModelManifest,
     private val cacheDirectory: File,
     private val assetSource: (String) -> InputStream?,
-) : ModelProvider, AutoCloseable {
+) : ModelProvider {
 
     constructor(context: Context, manifest: ModelManifest) : this(
         manifest = manifest,
@@ -35,14 +36,18 @@ class ModelRegistry(
     override fun close() {
         val openHandles = handles.values.toList()
         handles.clear()
+        var failure: Throwable? = null
         openHandles.forEach { handle ->
             try {
                 handle.close()
+            } catch (e: CancellationException) {
+                if (failure == null) failure = e
             } catch (e: OutOfMemoryError) {
-                throw e
+                if (failure == null) failure = e
             } catch (_: Throwable) {
             }
         }
+        failure?.let { throw it }
     }
 
     private fun materialize(entry: ModelManifest.Entry): File? {
@@ -64,6 +69,8 @@ class ModelRegistry(
                 file.delete()
                 null
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: OutOfMemoryError) {
             throw e
         } catch (_: Throwable) {

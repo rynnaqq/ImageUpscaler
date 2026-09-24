@@ -78,9 +78,9 @@ certutil -hashfile realesrgan_compact_x2.onnx SHA256   # Windows
 ```
 
 Then edit `app/src/main/java/com/rimuru/twobytwo/data/engine/ModelManifest.kt`:
-replace the placeholder entries with real `version` + `sha256` values. An empty
-sha256 accepts any file (dev mode). **Before release: make `materializeModel()`
-reject empty checksums** — see the TODO there.
+replace the placeholder entries with real `version` + `sha256` values. Blank
+checksums are rejected by `ModelRegistry`; they do not accept any file and
+cause the classical fallback until real SHA-256 values are supplied.
 
 ## Packaging decision (PRD Open Question #1)
 

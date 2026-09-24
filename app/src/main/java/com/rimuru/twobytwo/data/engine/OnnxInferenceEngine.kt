@@ -4,9 +4,9 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
-import com.rimuru.twobytwo.domain.engine.ModelHandle
 import com.rimuru.twobytwo.domain.engine.ModelProvider
 import com.rimuru.twobytwo.domain.model.Accelerator
+import kotlinx.coroutines.CancellationException
 import java.nio.FloatBuffer
 
 /**
@@ -26,11 +26,13 @@ class OnnxInferenceEngine(
 
     private val env: OrtEnvironment by lazy(environmentFactory)
     private val sessions = mutableMapOf<InferenceEngine.ModelKey, OrtSession>()
-    private val handles = mutableListOf<ModelHandle>()
+    private val sessionBackends = mutableMapOf<InferenceEngine.ModelKey, String>()
+    private val backendStatus = mutableMapOf<InferenceEngine.ModelKey, String>()
+    private var activeModelKey: InferenceEngine.ModelKey? = null
+    private var closed = false
 
     override val backendName: String
-        get() = _backendName
-    private var _backendName: String = "Model not loaded"
+        get() = activeModelKey?.let { backendStatus[it] } ?: "Model not loaded"
 
     private var lastRequestedAccelerator = Accelerator.AUTO
 
@@ -72,48 +74,52 @@ class OnnxInferenceEngine(
                     flat
                 }
             }
-        } catch (e: kotlinx.coroutines.CancellationException) {
+        } catch (e: CancellationException) {
             throw e
         } catch (e: OutOfMemoryError) {
             throw e
         } catch (t: Throwable) {
-            markFallback("${_backendName} runtime unavailable${reasonSuffix(t)}")
+            markFallback(modelKey, "${sessionBackends[modelKey] ?: "model"} runtime unavailable${reasonSuffix(t)}")
             bicubicFallback(input, tileWidth, tileHeight, modelKey)
         }
     }
 
     private fun sessionFor(modelKey: InferenceEngine.ModelKey): OrtSession? {
-        sessions[modelKey]?.let { return it }
+        sessions[modelKey]?.let {
+            activateSession(modelKey)
+            return it
+        }
         val handle = try {
             modelProvider.load(modelKey)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: OutOfMemoryError) {
             throw e
         } catch (t: Throwable) {
-            markFallback("model load failed${reasonSuffix(t)}")
+            markFallback(modelKey, "model load failed${reasonSuffix(t)}")
             null
         } ?: run {
-            markFallback("model unavailable (${modelKey.assetName})")
+            markFallback(modelKey, "model unavailable (${modelKey.assetName})")
             return null
         }
 
         return try {
             val path = handle.modelPath
             if (path.isNullOrBlank()) {
-                closeHandle(handle)
-                markFallback("invalid model handle (${modelKey.assetName})")
+                markFallback(modelKey, "invalid model handle (${modelKey.assetName})")
                 null
             } else {
                 val session = createSession(path)
                 sessions[modelKey] = session
-                handles += handle
-                _backendName = handle.backendName
+                markSession(modelKey, handle.backendName)
                 session
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: OutOfMemoryError) {
             throw e
         } catch (t: Throwable) {
-            closeHandle(handle)
-            markFallback("${handle.backendName} session unavailable${reasonSuffix(t)}")
+            markFallback(modelKey, "${handle.backendName} session unavailable${reasonSuffix(t)}")
             null
         }
     }
@@ -123,6 +129,9 @@ class OnnxInferenceEngine(
         var session: OrtSession? = null
         return try {
             env.createSession(path, options).also { session = it }
+        } catch (e: CancellationException) {
+            closeSession(session)
+            throw e
         } catch (e: OutOfMemoryError) {
             closeSession(session)
             throw e
@@ -132,6 +141,9 @@ class OnnxInferenceEngine(
         } finally {
             try {
                 options.close()
+            } catch (e: CancellationException) {
+                closeSession(session)
+                throw e
             } catch (e: OutOfMemoryError) {
                 closeSession(session)
                 throw e
@@ -144,6 +156,8 @@ class OnnxInferenceEngine(
         if (session == null) return
         try {
             session.close()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: OutOfMemoryError) {
             throw e
         } catch (_: Throwable) {
@@ -153,17 +167,20 @@ class OnnxInferenceEngine(
     private fun reasonSuffix(t: Throwable): String =
         t.message?.takeIf { it.isNotBlank() }?.let { ": ${it.take(80)}" } ?: ""
 
-    private fun markFallback(reason: String) {
-        _backendName = "Bicubic fallback ($reason)"
+    private fun markSession(modelKey: InferenceEngine.ModelKey, backend: String) {
+        sessionBackends[modelKey] = backend
+        backendStatus[modelKey] = backend
+        activeModelKey = modelKey
     }
 
-    private fun closeHandle(handle: ModelHandle) {
-        try {
-            handle.close()
-        } catch (e: OutOfMemoryError) {
-            throw e
-        } catch (_: Throwable) {
-        }
+    private fun activateSession(modelKey: InferenceEngine.ModelKey) {
+        backendStatus[modelKey] = sessionBackends[modelKey] ?: "Model not loaded"
+        activeModelKey = modelKey
+    }
+
+    private fun markFallback(modelKey: InferenceEngine.ModelKey, reason: String) {
+        backendStatus[modelKey] = "Bicubic fallback (${reason.take(240)})"
+        activeModelKey = modelKey
     }
 
     /** Catmull-Rom bicubic upscale so a missing model degrades gracefully (FR-1.3/§5.5). */
@@ -180,13 +197,16 @@ class OnnxInferenceEngine(
     )
 
     override fun close() {
-        sessions.values.forEach { closeSession(it) }
-        sessions.clear()
-        handles.forEach(::closeHandle)
-        handles.clear()
-        (modelProvider as? AutoCloseable)?.let { provider ->
+        if (closed) return
+        closed = true
+        try {
+            sessions.values.forEach(::closeSession)
+        } finally {
+            sessions.clear()
             try {
-                provider.close()
+                modelProvider.close()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: OutOfMemoryError) {
                 throw e
             } catch (_: Throwable) {

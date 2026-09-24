@@ -1,7 +1,9 @@
 package com.rimuru.twobytwo.domain.engine
 
-interface ModelProvider {
+interface ModelProvider : AutoCloseable {
     fun load(key: InferenceEngine.ModelKey): ModelHandle?
+
+    override fun close() = Unit
 }
 
 interface ModelHandle : AutoCloseable {

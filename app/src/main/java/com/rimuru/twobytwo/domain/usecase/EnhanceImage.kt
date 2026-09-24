@@ -107,6 +107,7 @@ class EnhanceImage(
             var failed = 0
             var outputUri: String? = null
             var lastError: String? = null
+            var backendUsed = engine.backendName
             val failedUris = mutableListOf<String>()
 
             for ((batchIndex, inputUri) in request.inputUris.withIndex()) {
@@ -130,6 +131,7 @@ class EnhanceImage(
                     ) { progress ->
                         send(progress)
                     }
+                    backendUsed = engine.backendName
                     if (outputUri == null) outputUri = encodedUri
                     succeeded++
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -141,6 +143,7 @@ class EnhanceImage(
                     val message = t.message?.takeIf { it.isNotBlank() }
                         ?: t::class.java.simpleName
                         ?: "Enhancement failed"
+                    backendUsed = engine.backendName
                     lastError = message
                     failed++
                     failedUris += inputUri
@@ -161,7 +164,7 @@ class EnhanceImage(
                     ProcessStep.DONE,
                     batchIndex = total - 1,
                     batchTotal = total,
-                    backendUsed = "${engine.backendName}; $succeeded ok, $failed failed",
+                    backendUsed = "$backendUsed; $succeeded ok, $failed failed",
                     outputUri = outputUri,
                     error = if (outputUri == null) lastError else null,
                 ),

@@ -129,7 +129,14 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
 
         val wm = WorkManager.getInstance(getApplication())
         wm.enqueueUniqueWork("enhance", ExistingWorkPolicy.REPLACE, work)
-        _state.update { it.copy(jobId = work.id, outputUri = null, progress = JobProgress(ProcessStep.PREPARING)) }
+        _state.update {
+            it.copy(
+                jobId = work.id,
+                outputUri = null,
+                progress = JobProgress(ProcessStep.PREPARING),
+                backendUsed = null,
+            )
+        }
 
         observeProgress(work.id)
     }
@@ -144,50 +151,57 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                         val step = p.getString(EnhanceWorker.KEY_STEP)?.let { runCatching { ProcessStep.valueOf(it) }.getOrNull() }
                         val outputUri = p.getString(EnhanceWorker.KEY_OUTPUT_URI)?.takeIf { it.isNotBlank() }
                         if (step != null && (step != ProcessStep.DONE || !outputUri.isNullOrBlank())) {
-                            _state.update {
-                                it.copy(
-                                    progress = JobProgress(
-                                        step = step,
-                                        tilesDone = p.getInt(EnhanceWorker.KEY_TILES_DONE, 0),
-                                        tilesTotal = p.getInt(EnhanceWorker.KEY_TILES_TOTAL, 0),
-                                        backendUsed = p.getString(EnhanceWorker.KEY_BACKEND),
-                                        outputUri = outputUri,
-                                        batchIndex = p.getInt(EnhanceWorker.KEY_BATCH_INDEX, 0),
-                                        batchTotal = p.getInt(EnhanceWorker.KEY_BATCH_TOTAL, 1),
-                                    ),
-                                )
-                            }
+                            val progress = JobProgress(
+                                step = step,
+                                tilesDone = p.getInt(EnhanceWorker.KEY_TILES_DONE, 0),
+                                tilesTotal = p.getInt(EnhanceWorker.KEY_TILES_TOTAL, 0),
+                                backendUsed = p.getString(EnhanceWorker.KEY_BACKEND),
+                                outputUri = outputUri,
+                                batchIndex = p.getInt(EnhanceWorker.KEY_BATCH_INDEX, 0),
+                                batchTotal = p.getInt(EnhanceWorker.KEY_BATCH_TOTAL, 1),
+                            )
+                            _state.update { runningState(it, progress) }
                         }
                     }
                     WorkInfo.State.SUCCEEDED -> {
-                        val outputUri = (info.outputData.getString(EnhanceWorker.KEY_OUTPUT_URI)
-                            ?: info.progress.getString(EnhanceWorker.KEY_OUTPUT_URI))
-                            ?.takeIf { it.isNotBlank() }
-                        val error = (info.outputData.getString(EnhanceWorker.KEY_ERROR)
-                            ?: info.progress.getString(EnhanceWorker.KEY_ERROR))
-                            ?.takeIf { it.isNotBlank() }
+                        val outputUri = firstNonBlank(
+                            info.outputData.getString(EnhanceWorker.KEY_OUTPUT_URI),
+                            info.progress.getString(EnhanceWorker.KEY_OUTPUT_URI),
+                        )
+                        val backend = firstNonBlank(
+                            info.outputData.getString(EnhanceWorker.KEY_BACKEND),
+                            info.progress.getString(EnhanceWorker.KEY_BACKEND),
+                        )
+                        val error = firstNonBlank(
+                            info.outputData.getString(EnhanceWorker.KEY_ERROR),
+                            info.progress.getString(EnhanceWorker.KEY_ERROR),
+                        )
                         if (outputUri == null) {
                             _state.update {
-                                it.copy(
-                                    progress = null,
-                                    error = error ?: getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed),
+                                failedState(
+                                    it,
+                                    error ?: getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed),
+                                    backend,
                                 )
                             }
                         } else {
-                            _state.update {
-                                it.copy(
-                                    outputUri = outputUri,
-                                    progress = JobProgress(ProcessStep.DONE, outputUri = outputUri),
-                                )
-                            }
+                            _state.update { succeededState(it, outputUri, backend) }
                         }
                     }
                     WorkInfo.State.FAILED -> {
-                        val error = info.outputData.getString(EnhanceWorker.KEY_ERROR)?.takeIf { it.isNotBlank() }
+                        val error = firstNonBlank(
+                            info.outputData.getString(EnhanceWorker.KEY_ERROR),
+                            info.progress.getString(EnhanceWorker.KEY_ERROR),
+                        )
+                        val backend = firstNonBlank(
+                            info.outputData.getString(EnhanceWorker.KEY_BACKEND),
+                            info.progress.getString(EnhanceWorker.KEY_BACKEND),
+                        )
                         _state.update {
-                            it.copy(
-                                progress = null,
-                                error = error ?: getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed),
+                            failedState(
+                                it,
+                                error ?: getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed),
+                                backend,
                             )
                         }
                     }
@@ -200,5 +214,30 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun cancelJob() {
         _state.value.jobId?.let { WorkManager.getInstance(getApplication()).cancelWorkById(it) }
+    }
+
+    companion object {
+        internal fun firstNonBlank(vararg values: String?): String? =
+            values.firstOrNull { !it.isNullOrBlank() }
+
+        internal fun runningState(state: UiState, progress: JobProgress): UiState = state.copy(
+            progress = progress,
+            backendUsed = progress.backendUsed?.takeIf { it.isNotBlank() } ?: state.backendUsed,
+        )
+
+        internal fun succeededState(state: UiState, outputUri: String, backend: String?): UiState {
+            val backendUsed = backend?.takeIf { it.isNotBlank() } ?: state.backendUsed
+            return state.copy(
+                outputUri = outputUri,
+                progress = JobProgress(ProcessStep.DONE, backendUsed = backendUsed, outputUri = outputUri),
+                backendUsed = backendUsed,
+            )
+        }
+
+        internal fun failedState(state: UiState, error: String, backend: String?): UiState = state.copy(
+            progress = null,
+            backendUsed = backend?.takeIf { it.isNotBlank() } ?: state.backendUsed,
+            error = error,
+        )
     }
 }

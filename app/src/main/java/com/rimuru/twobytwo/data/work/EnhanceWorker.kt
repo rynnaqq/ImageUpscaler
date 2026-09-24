@@ -50,6 +50,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         val tier = DeviceTiers.classify(applicationContext)
         val registry = ModelRegistry(applicationContext, ModelManifest.PLACEHOLDER)
         val engine = OnnxInferenceEngine(registry)
+        var lastBackend = engine.backendName
 
         try {
             setForeground(createForegroundInfo(applicationContext.getString(R.string.proc_step_preparing)))
@@ -68,7 +69,8 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             var last: JobProgress? = null
             flow.collect { progress ->
                 last = progress
-                val reportedBackend = progress.backendUsed ?: engine.backendName
+                val reportedBackend = progress.backendUsed?.takeIf { it.isNotBlank() } ?: lastBackend
+                lastBackend = reportedBackend
                 setProgress(
                     androidx.work.workDataOf(
                         KEY_STEP to progress.step.name,
@@ -87,26 +89,33 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
 
             val outputUri = last?.outputUri
             return if (last?.step == ProcessStep.DONE && !outputUri.isNullOrBlank()) {
-                Result.success(androidx.work.workDataOf(KEY_OUTPUT_URI to outputUri))
+                Result.success(
+                    androidx.work.workDataOf(
+                        KEY_OUTPUT_URI to outputUri,
+                        KEY_BACKEND to lastBackend,
+                    ),
+                )
             } else {
-                failure(last?.error)
+                failure(last?.error, last?.backendUsed ?: lastBackend)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: OutOfMemoryError) {
             throw e
         } catch (t: Throwable) {
-            if (t is CancellationException) throw t
-            return failure(t.message)
+            return failure(t.message, lastBackend)
         } finally {
             engine.close()
         }
     }
 
-    private fun failure(message: String?): Result = Result.failure(
+    private fun failure(message: String?, backend: String? = null): Result = Result.failure(
         androidx.work.workDataOf(
             KEY_ERROR to (
                 message?.takeIf { it.isNotBlank() }?.take(200)
                     ?: applicationContext.getString(R.string.error_job_failed)
                 ),
+            KEY_BACKEND to backend.orEmpty(),
         ),
     )
 

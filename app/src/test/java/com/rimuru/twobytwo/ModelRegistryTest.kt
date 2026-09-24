@@ -5,9 +5,11 @@ import com.rimuru.twobytwo.data.engine.ModelRegistry
 import com.rimuru.twobytwo.data.engine.OnnxInferenceEngine
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.engine.ModelProvider
+import kotlinx.coroutines.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -91,5 +93,77 @@ class ModelRegistryTest {
 
         assertEquals(0, environmentRequests)
         assertTrue(engine.backendName.contains("fallback"))
+    }
+
+    @Test
+    fun `provider cancellation escapes engine fallback`() {
+        val expected = CancellationException("provider cancelled")
+        val provider = object : ModelProvider {
+            override fun load(key: InferenceEngine.ModelKey): com.rimuru.twobytwo.domain.engine.ModelHandle? {
+                throw expected
+            }
+        }
+        val engine = OnnxInferenceEngine(
+            modelProvider = provider,
+            environmentFactory = { error("ONNX environment must stay lazy") },
+        )
+
+        val actual = runCatching {
+            engine.upscaleTile(FloatArray(3), 1, 1, InferenceEngine.ModelKey.CREATIVE_X2)
+        }.exceptionOrNull()
+
+        assertSame(expected, actual)
+        assertEquals("Model not loaded", engine.backendName)
+    }
+
+    @Test
+    fun `materializer cancellation escapes registry fallback`() {
+        val expected = CancellationException("materializer cancelled")
+        val key = InferenceEngine.ModelKey.CREATIVE_X2
+        val registry = ModelRegistry(
+            manifest = ModelManifest(mapOf(key to ModelManifest.Entry("model.onnx", "test", "checksum"))),
+            cacheDirectory = Files.createTempDirectory("model-registry-cancel").toFile(),
+            assetSource = { throw expected },
+        )
+
+        val actual = runCatching { registry.load(key) }.exceptionOrNull()
+
+        assertSame(expected, actual)
+    }
+
+    @Test
+    fun `repeated fallback status is bounded and not recursive`() {
+        val provider = object : ModelProvider {
+            override fun load(key: InferenceEngine.ModelKey) = null
+        }
+        val engine = OnnxInferenceEngine(modelProvider = provider)
+
+        repeat(3) {
+            engine.upscaleTile(FloatArray(3), 1, 1, InferenceEngine.ModelKey.CREATIVE_X2)
+        }
+
+        val status = engine.backendName
+        assertEquals("Bicubic fallback (model unavailable (realesrgan_compact_x2.onnx))", status)
+        assertEquals(1, "Bicubic fallback".toRegex().findAll(status).count())
+    }
+
+    @Test
+    fun `engine closes provider once and propagates cancellation`() {
+        val expected = CancellationException("provider close cancelled")
+        var closeCalls = 0
+        val provider = object : ModelProvider {
+            override fun load(key: InferenceEngine.ModelKey) = null
+            override fun close() {
+                closeCalls++
+                throw expected
+            }
+        }
+        val engine = OnnxInferenceEngine(modelProvider = provider)
+
+        val actual = runCatching { engine.close() }.exceptionOrNull()
+        engine.close()
+
+        assertSame(expected, actual)
+        assertEquals(1, closeCalls)
     }
 }

@@ -17,9 +17,8 @@ data class ModelManifest(
 
     companion object {
         /**
-         * ponytail: placeholder manifest with empty sha256 = "accept any file".
-         * Replace checksums with real values from models/README.md conversion step;
-         * before Play release, empty sha256 must hard-fail (see ModelsApi TODO in README).
+         * The registry rejects blank checksums, so placeholder entries select the
+         * classical fallback until real SHA-256 values are supplied.
          */
         val PLACEHOLDER = ModelManifest(
             InferenceEngine.ModelKey.entries.associateWith { key ->
