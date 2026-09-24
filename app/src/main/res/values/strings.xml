@@ -56,6 +56,13 @@
     <string name="proc_cancel_confirm_title">Cancel job?</string>
     <string name="proc_cancel_confirm_text">The job is more than half done. Cancel anyway?</string>
     <string name="proc_backend_used">Accelerator: %1$s</string>
+    <string name="proc_pass_denoise">Denoise</string>
+    <string name="proc_pass_deblur">Deblur</string>
+    <string name="proc_pass_scratch_repair">Scratch repair</string>
+    <string name="proc_pass_colorize">Colorization</string>
+    <string name="proc_pass_face_restore">Face restoration</string>
+    <string name="proc_pass_fallback">Fallback</string>
+    <string name="proc_pass_fallback_desc">A local method is used when the model is unavailable.</string>
 
     <!-- S4 Comparison -->
     <string name="compare_title">Compare</string>

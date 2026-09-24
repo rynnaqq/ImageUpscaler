@@ -52,6 +52,13 @@
     <string name="proc_cancel_confirm_title">Batalkan pekerjaan?</string>
     <string name="proc_cancel_confirm_text">Pekerjaan sudah lebih dari setengah selesai. Tetap batalkan?</string>
     <string name="proc_backend_used">Akselerator: %1$s</string>
+    <string name="proc_pass_denoise">Kurangi noise</string>
+    <string name="proc_pass_deblur">Kurangi buram</string>
+    <string name="proc_pass_scratch_repair">Perbaikan goresan</string>
+    <string name="proc_pass_colorize">Pewarnaan</string>
+    <string name="proc_pass_face_restore">Restorasi wajah</string>
+    <string name="proc_pass_fallback">Cadangan</string>
+    <string name="proc_pass_fallback_desc">Metode lokal digunakan saat model tidak tersedia.</string>
 
     <string name="compare_title">Bandingkan</string>
     <string name="compare_hold_hint">Tahan untuk melihat foto asli</string>
