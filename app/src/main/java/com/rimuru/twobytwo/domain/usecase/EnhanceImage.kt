@@ -60,6 +60,8 @@ class EnhanceImage(
     data class BatchResult(val succeeded: Int, val failed: Int, val failedUris: List<String>)
 
     companion object {
+        internal const val DEFAULT_MAX_OUTPUT_MEGAPIXELS = 64.0
+
         internal fun outputBufferSize(outWidth: Long, outHeight: Long, maxOutputMegapixels: Double): Int {
             require(outWidth > 0 && outHeight > 0) { "output dimensions must be positive" }
             require(maxOutputMegapixels.isFinite() && maxOutputMegapixels > 0.0) {
@@ -90,7 +92,7 @@ class EnhanceImage(
         maxMegapixels: Int = 48,
         sharpenMaxMegapixels: Double = 24.0,
         isCancelled: () -> Boolean = { false },
-        maxOutputMegapixels: Double = 24.0,
+        maxOutputMegapixels: Double = DEFAULT_MAX_OUTPUT_MEGAPIXELS,
     ): Flow<JobProgress> = channelFlow {
         withContext(Dispatchers.Default) {
             val total = request.inputUris.size
