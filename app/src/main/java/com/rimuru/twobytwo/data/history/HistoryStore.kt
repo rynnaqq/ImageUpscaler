@@ -4,8 +4,11 @@ import android.content.Context
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.math.BigDecimal
+import java.math.BigInteger
 import java.nio.charset.StandardCharsets
 import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -21,17 +24,7 @@ class FileHistoryStore(private val root: File) : HistoryStore {
     constructor(context: Context) : this(File(context.filesDir, DIRECTORY_NAME))
 
     override fun save(record: HistoryRecord) {
-        val id = validateId(record.id)
-        record.parentId?.let(::validateId)
-        ensureRoot()
-        val target = fileFor(id)
-        val temp = Files.createTempFile(root.toPath(), ".$id-", ".tmp")
-        try {
-            Files.write(temp, encode(record).toByteArray(StandardCharsets.UTF_8))
-            moveAtomically(temp, target.toPath())
-        } finally {
-            Files.deleteIfExists(temp)
-        }
+        write(record, replaceExisting = true)
     }
 
     override fun list(): List<HistoryRecord> {
@@ -63,8 +56,29 @@ class FileHistoryStore(private val root: File) : HistoryStore {
             createdAt = System.currentTimeMillis(),
             parentId = parent.id,
         )
-        save(child)
-        return child
+        return try {
+            write(child, replaceExisting = false)
+            child
+        } catch (_: FileAlreadyExistsException) {
+            null
+        }
+    }
+
+    private fun write(record: HistoryRecord, replaceExisting: Boolean) {
+        val id = validateId(record.id)
+        record.parentId?.let(::validateId)
+        ensureRoot()
+        val target = fileFor(id)
+        if (!replaceExisting && target.exists()) {
+            throw FileAlreadyExistsException(target.toString())
+        }
+        val temp = Files.createTempFile(root.toPath(), ".$id-", ".tmp")
+        try {
+            Files.write(temp, encode(record).toByteArray(StandardCharsets.UTF_8))
+            moveAtomically(temp, target.toPath(), replaceExisting)
+        } finally {
+            Files.deleteIfExists(temp)
+        }
     }
 
     private fun ensureRoot() {
@@ -120,13 +134,39 @@ class FileHistoryStore(private val root: File) : HistoryStore {
     private fun requiredString(obj: JSONObject, key: String): String =
         obj.opt(key) as? String ?: throw IOException("Missing or invalid field: $key")
 
-    private fun requiredInt(obj: JSONObject, key: String): Int =
-        (obj.opt(key) as? Number)?.toInt()
-            ?: throw IOException("Missing or invalid field: $key")
+    private fun requiredInt(obj: JSONObject, key: String): Int {
+        val value = requiredIntegralNumber(obj, key)
+        if (value < Int.MIN_VALUE.toLong() || value > Int.MAX_VALUE.toLong()) {
+            throw IOException("Out-of-range field: $key")
+        }
+        return value.toInt()
+    }
 
     private fun requiredLong(obj: JSONObject, key: String): Long =
-        (obj.opt(key) as? Number)?.toLong()
+        requiredIntegralNumber(obj, key)
+
+    private fun requiredIntegralNumber(obj: JSONObject, key: String): Long {
+        val value = obj.opt(key) as? Number
             ?: throw IOException("Missing or invalid field: $key")
+        return when (value) {
+            is Byte, is Short, is Int, is Long -> value.toLong()
+            is BigInteger -> try {
+                value.longValueExact()
+            } catch (_: ArithmeticException) {
+                throw IOException("Out-of-range field: $key")
+            }
+            is BigDecimal -> if (value.scale() > 0) {
+                throw IOException("Fractional field: $key")
+            } else {
+                try {
+                    value.toBigIntegerExact().longValueExact()
+                } catch (_: ArithmeticException) {
+                    throw IOException("Out-of-range field: $key")
+                }
+            }
+            else -> throw IOException("Invalid numeric field: $key")
+        }
+    }
 
     private fun optionalString(obj: JSONObject, key: String): String? {
         if (!obj.has(key) || obj.isNull(key)) return null
@@ -141,11 +181,22 @@ class FileHistoryStore(private val root: File) : HistoryStore {
     private fun isValidId(id: String): Boolean =
         id.length in 1..MAX_ID_LENGTH && ID_PATTERN.matches(id) && id != "." && id != ".."
 
-    private fun moveAtomically(source: Path, target: Path) {
+    private fun moveAtomically(source: Path, target: Path, replaceExisting: Boolean) {
         try {
-            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        } catch (_: AtomicMoveNotSupportedException) {
-            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING)
+            if (replaceExisting) {
+                Files.move(
+                    source,
+                    target,
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } else {
+                Files.move(source, target, StandardCopyOption.ATOMIC_MOVE)
+            }
+        } catch (e: AtomicMoveNotSupportedException) {
+            throw IOException("Atomic history move is not supported for: $target", e)
+        } catch (e: UnsupportedOperationException) {
+            throw IOException("Atomic history move is not supported for: $target", e)
         }
     }
 

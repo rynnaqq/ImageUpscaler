@@ -117,11 +117,56 @@ class HistoryStoreTest {
     }
 
     @Test
+    fun `duplicate settings does not replace an existing version`() {
+        val root = Files.createTempDirectory("history-collision").toFile()
+        val store = FileHistoryStore(root)
+        val parent = record("job-parent", createdAt = 10L)
+        val existing = record("job-child", createdAt = 20L)
+
+        store.save(parent)
+        store.save(existing)
+
+        val duplicate = store.duplicateSettings(parent.id, existing.id)
+
+        assertNull(duplicate)
+        assertEquals(parent, store.find(parent.id))
+        assertEquals(existing, store.find(existing.id))
+    }
+
+    @Test
     fun `duplicate settings returns null when the parent is missing`() {
         val root = Files.createTempDirectory("history-missing-parent").toFile()
         val store = FileHistoryStore(root)
 
         assertNull(store.duplicateSettings("missing", "child"))
+    }
+
+    @Test
+    fun `fractional numeric fields are malformed`() {
+        val root = Files.createTempDirectory("history-fractional").toFile()
+        val store = FileHistoryStore(root)
+        writeRawRecord(root, "fractional-width", "1.5", "480", "10")
+        writeRawRecord(root, "fractional-created", "640", "480", "10.5")
+
+        assertNull(store.find("fractional-width"))
+        assertNull(store.find("fractional-created"))
+        assertTrue(store.list().isEmpty())
+        assertTrue(File(root, "fractional-width.json").exists())
+        assertTrue(File(root, "fractional-created.json").exists())
+    }
+
+    @Test
+    fun `out of range numeric fields are malformed`() {
+        val root = Files.createTempDirectory("history-overflow").toFile()
+        val store = FileHistoryStore(root)
+        writeRawRecord(root, "overflow-width", "2147483648", "480", "10")
+        writeRawRecord(root, "overflow-height", "640", "2147483648", "10")
+        writeRawRecord(root, "overflow-created", "640", "480", "9223372036854775808")
+
+        assertNull(store.find("overflow-width"))
+        assertNull(store.find("overflow-height"))
+        assertNull(store.find("overflow-created"))
+        assertTrue(store.list().isEmpty())
     }
 
     @Test
@@ -132,6 +177,18 @@ class HistoryStoreTest {
         store.save(record("job-atomic", createdAt = 10L))
 
         assertTrue(root.listFiles()?.none { it.name.endsWith(".tmp") } == true)
+    }
+
+    private fun writeRawRecord(
+        root: File,
+        id: String,
+        width: String,
+        height: String,
+        createdAt: String,
+    ) {
+        File(root, "$id.json").writeText(
+            """{"id":"$id","sourceUri":"content://source/$id","settingsJson":"{}","outputUri":null,"width":$width,"height":$height,"createdAt":$createdAt,"parentId":null}""",
+        )
     }
 
     private fun record(
