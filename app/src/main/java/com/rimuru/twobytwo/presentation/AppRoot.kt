@@ -5,6 +5,8 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,6 +38,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -62,16 +66,27 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlin.math.abs
 import coil.compose.AsyncImage
 import com.rimuru.twobytwo.R
 import com.rimuru.twobytwo.domain.model.Accelerator
@@ -97,7 +112,7 @@ fun AppRoot(initialSharedUri: String?) {
                 targetState = when {
                     state.error != null -> "error"
                     state.isProcessing -> "processing"
-                    state.progress?.step == ProcessStep.DONE -> "export"
+                    state.progress?.step == ProcessStep.DONE && !state.outputUri.isNullOrBlank() -> "export"
                     state.pickedUris.isNotEmpty() -> "config"
                     else -> "home"
                 },
@@ -207,7 +222,7 @@ fun HomeScreen(
 }
 
 /** S2 — Configuration: original flat layout, each feature with icon + description. */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ConfigScreen(
     state: EnhanceViewModel.UiState,
@@ -215,13 +230,33 @@ fun ConfigScreen(
 ) {
     val previewUri = state.previewUri ?: return
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
+    Scaffold(
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text(stringResource(R.string.config_title)) },
+                navigationIcon = {
+                    IconButton(onClick = { onIntent(EnhanceViewModel.Intent.ClearPhoto) }) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.navigate_back),
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
         AsyncImage(
             model = previewUri,
             contentDescription = null,
@@ -346,6 +381,7 @@ fun ConfigScreen(
             description = stringResource(R.string.config_accel_desc),
         ) {
             FlowRow(
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Accelerator.entries.forEach { acc ->
@@ -375,7 +411,8 @@ fun ConfigScreen(
             Spacer(Modifier.width(8.dp))
             Text(stringResource(R.string.config_enhance), style = MaterialTheme.typography.labelLarge)
         }
-        Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(12.dp))
+        }
     }
 }
 
@@ -391,7 +428,10 @@ private fun FeatureRow(
     content: @Composable () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Box(
                 modifier = Modifier
                     .size(38.dp)
@@ -407,7 +447,7 @@ private fun FeatureRow(
                 )
             }
             Spacer(Modifier.width(12.dp))
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleMedium)
                 Text(
                     description,
@@ -429,6 +469,7 @@ private fun accelLabel(acc: Accelerator): Int = when (acc) {
 }
 
 /** S3 — Processing with step-by-step progress (US-06) + cancel confirm (UX-5). */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProcessingScreen(
     state: EnhanceViewModel.UiState,
@@ -437,7 +478,17 @@ fun ProcessingScreen(
     val progress = state.progress ?: return
     var confirmCancel by remember { mutableStateOf(false) }
 
-    Scaffold(containerColor = MaterialTheme.colorScheme.surface) { padding ->
+    Scaffold(
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text(stringResource(R.string.proc_title)) },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) { padding ->
         Column(
             modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -512,13 +563,17 @@ fun ExportScreen(
     onIntent: (EnhanceViewModel.Intent) -> Unit,
 ) {
     val context = LocalContext.current
+    val resultUri = state.outputUri
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
                 title = { Text(stringResource(R.string.compare_title)) },
                 navigationIcon = {
                     IconButton(onClick = { onIntent(EnhanceViewModel.Intent.ClearPhoto) }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(android.R.string.cancel))
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.navigate_back),
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
@@ -535,15 +590,16 @@ fun ExportScreen(
             state.previewUri?.let { original ->
                 ComparisonViewer(
                     originalUri = original,
-                    // ponytail: worker saves directly to MediaStore; result-URI Data
-                    // field is the M1 upgrade so the right half shows the real output.
-                    resultUri = state.previewUri,
-                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(20.dp)),
+                    resultUri = resultUri,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .clip(RoundedCornerShape(20.dp)),
                 )
             }
 
             Text(
-                stringResource(R.string.export_saved),
+                stringResource(if (resultUri != null) R.string.export_saved else R.string.export_preview_notice),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -558,11 +614,12 @@ fun ExportScreen(
                     onClick = {
                         val share = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                             type = "image/*"
-                            putExtra(android.content.Intent.EXTRA_STREAM, state.previewUri?.let { android.net.Uri.parse(it) })
+                            putExtra(android.content.Intent.EXTRA_STREAM, resultUri?.let(android.net.Uri::parse))
                             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
                         context.startActivity(android.content.Intent.createChooser(share, null))
                     },
+                    enabled = resultUri != null,
                     modifier = Modifier.weight(1f).height(52.dp),
                     shape = RoundedCornerShape(14.dp),
                 ) { Text(stringResource(R.string.export_share)) }
@@ -571,10 +628,6 @@ fun ExportScreen(
     }
 }
 
-/**
- * S4 — before/after split viewer. Draggable divider; left = original, right = result.
- * ponytail: single-gesture drag only; pinch-zoom sync is the M4 polish item.
- */
 @Composable
 fun ComparisonViewer(
     originalUri: String,
@@ -582,33 +635,88 @@ fun ComparisonViewer(
     modifier: Modifier = Modifier,
 ) {
     var splitFraction by remember { mutableStateOf(0.5f) }
+    var zoom by remember { mutableStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
 
-    androidx.compose.foundation.layout.BoxWithConstraints(modifier) {
+    androidx.compose.foundation.layout.BoxWithConstraints(modifier.clipToBounds()) {
+        val width = constraints.maxWidth.toFloat().coerceAtLeast(1f)
+        val height = constraints.maxHeight.toFloat().coerceAtLeast(1f)
+        val density = LocalDensity.current
+        val handleHalfPx = with(density) { 24.dp.toPx() }
+        val handleX = (width * splitFraction).coerceIn(
+            handleHalfPx.coerceAtMost(width / 2f),
+            width - handleHalfPx.coerceAtMost(width / 2f),
+        )
+        val handleDescription = stringResource(R.string.compare_handle)
+        val hasResult = resultUri != null
+        val resultLabel = if (hasResult) R.string.compare_enhanced else R.string.compare_preview
+        val transform = Modifier.graphicsLayer {
+            transformOrigin = TransformOrigin(0f, 0f)
+            scaleX = zoom
+            scaleY = zoom
+            translationX = offset.x
+            translationY = offset.y
+        }
+
         AsyncImage(
             model = resultUri ?: originalUri,
             contentDescription = null,
             contentScale = ContentScale.Fit,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().then(transform),
         )
-        AsyncImage(
-            model = originalUri,
-            contentDescription = stringResource(R.string.compare_hold_hint),
-            contentScale = ContentScale.Fit,
-            modifier = Modifier
-                .fillMaxSize()
-                .clipToBounds()
-        )
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures { change, _ ->
-                        change.consume()
-                        val f = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
-                        splitFraction = f
+                .drawWithContent {
+                    clipRect(right = size.width * splitFraction) {
+                        drawContent()
                     }
                 },
+        ) {
+            AsyncImage(
+                model = originalUri,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize().then(transform),
+            )
+        }
+
+        Box(
+            Modifier
+                .fillMaxSize()
+                .pointerInput(width, height) {
+                    detectTransformGestures { centroid, pan, gestureZoom, _ ->
+                        val oldZoom = zoom
+                        val newZoom = clampComparisonZoom(oldZoom * gestureZoom)
+                        if (oldZoom == 1f && newZoom == 1f && abs(pan.x) > abs(pan.y)) {
+                            splitFraction = (splitFraction + pan.x / width).coerceIn(0f, 1f)
+                        } else {
+                            var nextX = offset.x
+                            var nextY = offset.y
+                            if (newZoom != oldZoom) {
+                                val ratio = newZoom / oldZoom
+                                nextX = centroid.x - (centroid.x - nextX) * ratio
+                                nextY = centroid.y - (centroid.y - nextY) * ratio
+                            }
+                            nextX += pan.x
+                            nextY += pan.y
+                            offset = Offset(
+                                clampComparisonPanAxis(nextX, newZoom, width),
+                                clampComparisonPanAxis(nextY, newZoom, height),
+                            )
+                        }
+                        zoom = newZoom
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectTapGestures(onDoubleTap = {
+                        zoom = 1f
+                        offset = Offset.Zero
+                    })
+                },
         )
+
         Canvas(Modifier.fillMaxSize()) {
             val x = size.width * splitFraction
             drawLine(
@@ -618,8 +726,65 @@ fun ComparisonViewer(
                 strokeWidth = 3f,
             )
         }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .offset { IntOffset(handleX.toInt() - handleHalfPx.toInt(), 0) }
+                .size(48.dp)
+                .semantics {
+                    contentDescription = handleDescription
+                    role = Role.Slider
+                    stateDescription = "${(splitFraction * 100).toInt()}%"
+                }
+                .pointerInput(width) {
+                    detectHorizontalDragGestures { change, dragAmount ->
+                        change.consume()
+                        splitFraction = (splitFraction + dragAmount / width).coerceIn(0f, 1f)
+                    }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.9f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.SwapHoriz,
+                    contentDescription = null,
+                    tint = Color.Black.copy(alpha = 0.7f),
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+
+        ComparisonBadge(
+            label = stringResource(R.string.compare_original),
+            modifier = Modifier.align(Alignment.TopStart).padding(12.dp),
+        )
+        ComparisonBadge(
+            label = stringResource(resultLabel),
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
+        )
+        TextButton(
+            onClick = {
+                splitFraction = 0.5f
+                zoom = 1f
+                offset = Offset.Zero
+            },
+            modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+            colors = ButtonDefaults.textButtonColors(
+                containerColor = Color.Black.copy(alpha = 0.5f),
+                contentColor = Color.White,
+            ),
+        ) {
+            Text(stringResource(R.string.compare_reset))
+        }
         Text(
-            stringResource(R.string.compare_hold_hint),
+            stringResource(R.string.compare_zoom_hint),
             style = MaterialTheme.typography.labelLarge,
             color = Color.White,
             modifier = Modifier
@@ -630,4 +795,17 @@ fun ComparisonViewer(
                 .padding(horizontal = 10.dp, vertical = 6.dp),
         )
     }
+}
+
+@Composable
+private fun ComparisonBadge(label: String, modifier: Modifier = Modifier) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelLarge,
+        color = Color.White,
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color.Black.copy(alpha = 0.55f))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    )
 }

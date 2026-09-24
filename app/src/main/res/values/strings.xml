@@ -37,7 +37,9 @@
     <string name="config_accel_npu">NPU</string>
     <string name="config_accel_cpu">CPU</string>
     <string name="config_output_size">Output: %1$dx%2$d</string>
+    <string name="config_title">Enhancement settings</string>
     <string name="config_enhance">Enhance</string>
+    <string name="navigate_back">Back</string>
     <string name="config_fast_path_offer">This device may be slow for neural upscaling — use fast mode instead?</string>
     <string name="config_fast_path_yes">Use fast mode</string>
     <string name="config_fast_path_no">Try neural anyway</string>
@@ -59,6 +61,12 @@
     <string name="compare_title">Compare</string>
     <string name="compare_hold_hint">Hold to see original</string>
     <string name="compare_side_by_side">Side by side</string>
+    <string name="compare_original">Original</string>
+    <string name="compare_enhanced">Enhanced</string>
+    <string name="compare_preview">Preview</string>
+    <string name="compare_reset">Reset</string>
+    <string name="compare_handle">Move comparison divider</string>
+    <string name="compare_zoom_hint">Pinch to zoom · double-tap to reset</string>
 
     <!-- S5 Export -->
     <string name="export_title">Export</string>
@@ -68,6 +76,7 @@
     <string name="export_keep_exif">Keep photo metadata (Exif)</string>
     <string name="export_save">Save to gallery</string>
     <string name="export_saved">Saved to gallery</string>
+    <string name="export_preview_notice">Preview only — the enhanced file is not available yet.</string>
     <string name="export_share">Share</string>
     <string name="export_save_copy">Save a copy</string>
 

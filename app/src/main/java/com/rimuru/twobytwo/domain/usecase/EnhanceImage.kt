@@ -31,6 +31,8 @@ class EnhanceImage(
     private val tileConfig: TileConfig = TileConfig(),
 ) {
     interface ImageIo {
+        fun measure(uri: String, maxMegapixels: Int): Dimensions
+
         /** Decode input to RGBA_8888 bytes; returns dims. */
         fun decode(uri: String, maxMegapixels: Int): DecodedImage
 
@@ -42,18 +44,38 @@ class EnhanceImage(
             destinationUri: String,
             format: OutputFormat,
             exifSourceUri: String?,
-        )
+        ): String
     }
 
     data class DecodedImage(val rgba: ByteArray, val width: Int, val height: Int) {
         val megapixels: Double get() = width.toLong() * height / 1_000_000.0
     }
 
+    data class Dimensions(val width: Int, val height: Int)
+
     enum class OutputFormat { PNG, JPEG }
 
     data class TileConfig(val tileSize: Int = 256)
 
     data class BatchResult(val succeeded: Int, val failed: Int, val failedUris: List<String>)
+
+    companion object {
+        internal fun outputBufferSize(outWidth: Long, outHeight: Long, maxOutputMegapixels: Double): Int {
+            require(outWidth > 0 && outHeight > 0) { "output dimensions must be positive" }
+            require(maxOutputMegapixels.isFinite() && maxOutputMegapixels > 0.0) {
+                "max output megapixels must be finite and positive"
+            }
+            require(outWidth <= Int.MAX_VALUE.toLong() && outHeight <= Int.MAX_VALUE.toLong()) {
+                "output dimensions exceed JVM array limit"
+            }
+            val pixels = outWidth * outHeight
+            require(pixels <= maxOutputMegapixels * 1_000_000.0) {
+                "output ${pixels / 1_000_000.0} MP exceeds cap $maxOutputMegapixels MP"
+            }
+            require(pixels <= Int.MAX_VALUE.toLong() / 4L) { "output buffer exceeds JVM array limit" }
+            return (pixels * 4L).toInt()
+        }
+    }
 
     /**
      * @param maxMegapixels input safety valve (FR-1.6, default 48 MP).
@@ -68,11 +90,13 @@ class EnhanceImage(
         maxMegapixels: Int = 48,
         sharpenMaxMegapixels: Double = 24.0,
         isCancelled: () -> Boolean = { false },
+        maxOutputMegapixels: Double = 24.0,
     ): Flow<JobProgress> = channelFlow {
         withContext(Dispatchers.Default) {
             val total = request.inputUris.size
             var succeeded = 0
             var failed = 0
+            var outputUri: String? = null
             val failedUris = mutableListOf<String>()
 
             for ((batchIndex, inputUri) in request.inputUris.withIndex()) {
@@ -83,9 +107,21 @@ class EnhanceImage(
 
                 try {
                     send(JobProgress(ProcessStep.PREPARING, batchIndex = batchIndex, batchTotal = total))
-                    processOne(request, inputUri, outputNameFor(batchIndex, inputUri), format, maxMegapixels, sharpenOutput = request.sharpen, sharpenMaxMegapixels, batchIndex, total) { progress ->
+                    val encodedUri = processOne(
+                        request = request,
+                        inputUri = inputUri,
+                        outputUri = outputNameFor(batchIndex, inputUri),
+                        format = format,
+                        maxMegapixels = maxMegapixels,
+                        sharpenOutput = request.sharpen,
+                        sharpenMaxMegapixels = sharpenMaxMegapixels,
+                        batchIndex = batchIndex,
+                        batchTotal = total,
+                        maxOutputMegapixels = maxOutputMegapixels,
+                    ) { progress ->
                         send(progress)
                     }
+                    if (outputUri == null) outputUri = encodedUri
                     succeeded++
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
@@ -110,6 +146,7 @@ class EnhanceImage(
                     batchIndex = total - 1,
                     batchTotal = total,
                     backendUsed = "$succeeded ok, $failed failed",
+                    outputUri = outputUri,
                 ),
             )
         }
@@ -126,9 +163,10 @@ class EnhanceImage(
         sharpenMaxMegapixels: Double,
         batchIndex: Int,
         batchTotal: Int,
+        maxOutputMegapixels: Double,
         emit: (JobProgress) -> Unit,
-    ) {
-        val decoded = imageIo.decode(inputUri, maxMegapixels)
+    ): String {
+        val dimensions = imageIo.measure(inputUri, maxMegapixels)
         val scale = when (request.scale) {
             ScaleFactor.X2 -> 2
             ScaleFactor.X4 -> 4
@@ -140,16 +178,20 @@ class EnhanceImage(
                 if (scale == 2) InferenceEngine.ModelKey.CREATIVE_X2 else InferenceEngine.ModelKey.CREATIVE_X4
         }
 
+        val outputBytes = outputBufferSize(
+            dimensions.width.toLong() * scale,
+            dimensions.height.toLong() * scale,
+            maxOutputMegapixels,
+        )
         val tiling = TilingManager(
-            imageWidth = decoded.width,
-            imageHeight = decoded.height,
+            imageWidth = dimensions.width,
+            imageHeight = dimensions.height,
             scale = scale,
             tileSize = tileConfig.tileSize,
             overlap = TilingManager.overlapFor(tileConfig.tileSize),
         )
-
-        // TC-3: the full-res output buffer is allocated exactly once.
-        val out = ByteArray(tiling.outWidth * tiling.outHeight * 4)
+        val decoded = imageIo.decode(inputUri, maxMegapixels)
+        val out = ByteArray(outputBytes)
         var tilesDone = 0
 
         val modelScale = InferenceEngine.scaleFor(modelKey)
@@ -202,7 +244,7 @@ class EnhanceImage(
         }
 
         emit(JobProgress(ProcessStep.BLENDING, batchIndex = batchIndex, batchTotal = batchTotal))
-        imageIo.encode(out, tiling.outWidth, tiling.outHeight, outputUri, format, inputUri)
+        return imageIo.encode(out, tiling.outWidth, tiling.outHeight, outputUri, format, inputUri)
     }
 
     private fun copyTile(

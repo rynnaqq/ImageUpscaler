@@ -10,6 +10,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.rimuru.twobytwo.R
+import com.rimuru.twobytwo.data.device.DeviceTiers
 import com.rimuru.twobytwo.data.engine.ModelManifest
 import com.rimuru.twobytwo.data.engine.OnnxInferenceEngine
 import com.rimuru.twobytwo.data.media.MediaStoreImageIo
@@ -39,12 +40,17 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
     override suspend fun doWork(): Result {
         val request = parseRequest(inputData.getString(KEY_REQUEST)) ?: return Result.failure()
         val baseName = inputData.getString(KEY_OUTPUT_NAME) ?: defaultBaseName()
+        val tier = DeviceTiers.classify(applicationContext)
         val engine = OnnxInferenceEngine(applicationContext, ModelManifest.PLACEHOLDER)
 
         try {
             setForeground(createForegroundInfo(applicationContext.getString(R.string.proc_step_preparing)))
 
-            val useCase = EnhanceImage(engine, MediaStoreImageIo(applicationContext))
+            val useCase = EnhanceImage(
+                engine,
+                MediaStoreImageIo(applicationContext),
+                EnhanceImage.TileConfig(tier.recommendedTileSize),
+            )
             val flow = useCase.run(
                 request = request,
                 outputNameFor = { index, _ -> "${baseName}_${index + 1}.png" },
@@ -62,13 +68,19 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                         KEY_BACKEND to (progress.backendUsed ?: engine.backendName),
                         KEY_BATCH_INDEX to progress.batchIndex,
                         KEY_BATCH_TOTAL to progress.batchTotal,
+                        KEY_OUTPUT_URI to progress.outputUri.orEmpty(),
                         KEY_BATCH_SUCCEEDED to progress.backendUsed?.takeLastWhile { it.isDigit() }.orEmpty(),
                     ),
                 )
                 setForeground(createForegroundInfo(stepText(progress)))
             }
 
-            return if (last?.step == ProcessStep.DONE) Result.success() else Result.failure()
+            val outputUri = last?.outputUri
+            return if (last?.step == ProcessStep.DONE && !outputUri.isNullOrBlank()) {
+                Result.success(androidx.work.workDataOf(KEY_OUTPUT_URI to outputUri))
+            } else {
+                Result.failure()
+            }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             return Result.failure()
@@ -144,6 +156,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         const val KEY_BACKEND = "backend"
         const val KEY_BATCH_INDEX = "batchIndex"
         const val KEY_BATCH_TOTAL = "batchTotal"
+        const val KEY_OUTPUT_URI = "outputUri"
         const val KEY_BATCH_SUCCEEDED = "batchSucceeded"
         const val CHANNEL_ID = "enhance_jobs"
         const val NOTIFICATION_ID = 42

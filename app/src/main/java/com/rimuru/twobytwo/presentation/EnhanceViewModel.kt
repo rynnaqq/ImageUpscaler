@@ -78,7 +78,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         when (intent) {
             is Intent.PickPhotos -> _state.update {
                 if (intent.uris.isNotEmpty()) {
-                    it.copy(pickedUris = intent.uris.map(Uri::toString), error = null)
+                    it.copy(pickedUris = intent.uris.map(Uri::toString), outputUri = null, progress = null, error = null)
                 } else it
             }
             Intent.ClearPhoto -> _state.update { it.copy(pickedUris = emptyList(), outputUri = null, progress = null) }
@@ -129,7 +129,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
 
         val wm = WorkManager.getInstance(getApplication())
         wm.enqueueUniqueWork("enhance", ExistingWorkPolicy.REPLACE, work)
-        _state.update { it.copy(jobId = work.id, progress = JobProgress(ProcessStep.PREPARING)) }
+        _state.update { it.copy(jobId = work.id, outputUri = null, progress = JobProgress(ProcessStep.PREPARING)) }
 
         observeProgress(work.id)
     }
@@ -142,7 +142,8 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                     WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED -> {
                         val p = info.progress
                         val step = p.getString(EnhanceWorker.KEY_STEP)?.let { runCatching { ProcessStep.valueOf(it) }.getOrNull() }
-                        if (step != null) {
+                        val outputUri = p.getString(EnhanceWorker.KEY_OUTPUT_URI)?.takeIf { it.isNotBlank() }
+                        if (step != null && (step != ProcessStep.DONE || !outputUri.isNullOrBlank())) {
                             _state.update {
                                 it.copy(
                                     progress = JobProgress(
@@ -150,6 +151,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                                         tilesDone = p.getInt(EnhanceWorker.KEY_TILES_DONE, 0),
                                         tilesTotal = p.getInt(EnhanceWorker.KEY_TILES_TOTAL, 0),
                                         backendUsed = p.getString(EnhanceWorker.KEY_BACKEND),
+                                        outputUri = outputUri,
                                         batchIndex = p.getInt(EnhanceWorker.KEY_BATCH_INDEX, 0),
                                         batchTotal = p.getInt(EnhanceWorker.KEY_BATCH_TOTAL, 1),
                                     ),
@@ -158,8 +160,24 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                     WorkInfo.State.SUCCEEDED -> {
-                        // Output lands in MediaStore; surfaced via Export screen by re-querying
-                        _state.update { it.copy(progress = JobProgress(ProcessStep.DONE)) }
+                        val outputUri = (info.outputData.getString(EnhanceWorker.KEY_OUTPUT_URI)
+                            ?: info.progress.getString(EnhanceWorker.KEY_OUTPUT_URI))
+                            ?.takeIf { it.isNotBlank() }
+                        if (outputUri == null) {
+                            _state.update {
+                                it.copy(
+                                    progress = null,
+                                    error = getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed),
+                                )
+                            }
+                        } else {
+                            _state.update {
+                                it.copy(
+                                    outputUri = outputUri,
+                                    progress = JobProgress(ProcessStep.DONE, outputUri = outputUri),
+                                )
+                            }
+                        }
                     }
                     WorkInfo.State.FAILED -> _state.update {
                         it.copy(progress = null, error = getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed))

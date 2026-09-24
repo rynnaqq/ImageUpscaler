@@ -34,7 +34,9 @@
     <string name="config_accel_npu">NPU</string>
     <string name="config_accel_cpu">CPU</string>
     <string name="config_output_size">Output: %1$dx%2$d</string>
+    <string name="config_title">Pengaturan penyempurnaan</string>
     <string name="config_enhance">Sempurnakan</string>
+    <string name="navigate_back">Kembali</string>
     <string name="config_fast_path_offer">Perangkat ini mungkin lambat untuk upscale neural — gunakan mode cepat?</string>
     <string name="config_fast_path_yes">Mode cepat</string>
     <string name="config_fast_path_no">Coba neural</string>
@@ -54,6 +56,12 @@
     <string name="compare_title">Bandingkan</string>
     <string name="compare_hold_hint">Tahan untuk melihat foto asli</string>
     <string name="compare_side_by_side">Bersebelahan</string>
+    <string name="compare_original">Asli</string>
+    <string name="compare_enhanced">Ditingkatkan</string>
+    <string name="compare_preview">Pratinjau</string>
+    <string name="compare_reset">Atur ulang</string>
+    <string name="compare_handle">Geser pembatas perbandingan</string>
+    <string name="compare_zoom_hint">Cubit untuk zoom · ketuk dua kali untuk atur ulang</string>
 
     <string name="export_title">Ekspor</string>
     <string name="export_format">Format</string>
@@ -62,6 +70,7 @@
     <string name="export_keep_exif">Simpan metadata foto (Exif)</string>
     <string name="export_save">Simpan ke galeri</string>
     <string name="export_saved">Tersimpan ke galeri</string>
+    <string name="export_preview_notice">Pratinjau saja — file hasil belum tersedia.</string>
     <string name="export_share">Bagikan</string>
     <string name="export_save_copy">Simpan salinan</string>
 

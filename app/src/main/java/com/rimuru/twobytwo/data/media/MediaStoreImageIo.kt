@@ -17,17 +17,30 @@ import java.io.InputStream
  */
 class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo {
 
-    override fun decode(uri: String, maxMegapixels: Int): EnhanceImage.DecodedImage {
+    override fun measure(uri: String, maxMegapixels: Int): EnhanceImage.Dimensions {
         val resolver = context.contentResolver
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         resolver.openInputStream(Uri.parse(uri))!!.use { BitmapFactory.decodeStream(it, null, opts) }
+        require(opts.outWidth > 0 && opts.outHeight > 0) { "decode failed for $uri" }
 
         val mp = opts.outWidth.toLong() * opts.outHeight / 1_000_000.0
         require(mp <= maxMegapixels) { "input ${"%.1f".format(mp)} MP exceeds cap $maxMegapixels MP" }
+        val orientation = resolver.openInputStream(Uri.parse(uri))!!.use {
+            ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)
+        }
+        val swapsDimensions = orientation == ExifInterface.ORIENTATION_ROTATE_90 ||
+            orientation == ExifInterface.ORIENTATION_ROTATE_270
+        return EnhanceImage.Dimensions(
+            width = if (swapsDimensions) opts.outHeight else opts.outWidth,
+            height = if (swapsDimensions) opts.outWidth else opts.outHeight,
+        )
+    }
 
-        // Subsample only if needed to stay within cap (never upscales)
+    override fun decode(uri: String, maxMegapixels: Int): EnhanceImage.DecodedImage {
+        val dimensions = measure(uri, maxMegapixels)
+        val resolver = context.contentResolver
         var sample = 1
-        while (opts.outWidth.toLong() * opts.outHeight / (sample.toLong() * sample) > maxMegapixels * 1_000_000) {
+        while (dimensions.width.toLong() * dimensions.height / (sample.toLong() * sample) > maxMegapixels.toLong() * 1_000_000L) {
             sample *= 2
         }
         val decodeOpts = BitmapFactory.Options().apply {
@@ -49,7 +62,6 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo {
         }
 
         val rgba = ByteArray(oriented.width * oriented.height * 4)
-        val rowBytes = oriented.width * 4
         val buffer = java.nio.ByteBuffer.wrap(rgba)
         oriented.copyPixelsToBuffer(buffer)
         oriented.recycle()
@@ -64,7 +76,7 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo {
         destinationUri: String,
         format: EnhanceImage.OutputFormat,
         exifSourceUri: String?,
-    ) {
+    ): String {
         val resolver = context.contentResolver
         val (mime, jpgQuality) = when (format) {
             EnhanceImage.OutputFormat.PNG -> "image/png" to 100
@@ -78,55 +90,65 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo {
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
         }
-        val outUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-            ?: error("MediaStore insert failed")
-
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        java.nio.ByteBuffer.wrap(rgba).rewind()
-        bitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(rgba))
+        var insertedUri: Uri? = null
+        try {
+            val outUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                ?: error("MediaStore insert failed")
+            insertedUri = outUri
+            java.nio.ByteBuffer.wrap(rgba).rewind()
+            bitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(rgba))
 
-        resolver.openOutputStream(outUri)!!.use { os ->
-            bitmap.compress(
-                if (format == EnhanceImage.OutputFormat.PNG) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG,
-                jpgQuality,
-                os,
-            )
-        }
-
-        // Copy capture metadata from the source photo (US-08). Output orientation is
-        // already baked in at decode time, so orientation is deliberately not copied.
-        if (exifSourceUri != null) {
-            try {
-                val srcExif = resolver.openInputStream(Uri.parse(exifSourceUri))!!.use { input ->
-                    ExifInterface(input)
-                }
-                val pfd = resolver.openFileDescriptor(outUri, "rw")
-                if (pfd != null) {
-                    pfd.use {
-                        val outExif = ExifInterface(it.fileDescriptor)
-                        val tags = listOf(
-                            ExifInterface.TAG_DATETIME_ORIGINAL,
-                            ExifInterface.TAG_MAKE,
-                            ExifInterface.TAG_MODEL,
-                        )
-                        for (tag in tags) {
-                            val value = srcExif.getAttribute(tag)
-                            if (value != null) outExif.setAttribute(tag, value)
-                        }
-                        outExif.saveAttributes()
-                    }
-                }
-            } catch (_: Exception) {
-                // Metadata loss is non-fatal; image already saved.
+            resolver.openOutputStream(outUri)!!.use { os ->
+                check(
+                    bitmap.compress(
+                        if (format == EnhanceImage.OutputFormat.PNG) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG,
+                        jpgQuality,
+                        os,
+                    ),
+                ) { "image compression failed" }
             }
-        }
 
-        if (Build.VERSION.SDK_INT >= 29) {
-            values.clear()
-            values.put(MediaStore.Images.Media.IS_PENDING, 0)
-            resolver.update(outUri, values, null, null)
+            // Copy capture metadata from the source photo (US-08). Output orientation is
+            // already baked in at decode time, so orientation is deliberately not copied.
+            if (exifSourceUri != null) {
+                try {
+                    val srcExif = resolver.openInputStream(Uri.parse(exifSourceUri))!!.use { input ->
+                        ExifInterface(input)
+                    }
+                    val pfd = resolver.openFileDescriptor(outUri, "rw")
+                    if (pfd != null) {
+                        pfd.use {
+                            val outExif = ExifInterface(it.fileDescriptor)
+                            val tags = listOf(
+                                ExifInterface.TAG_DATETIME_ORIGINAL,
+                                ExifInterface.TAG_MAKE,
+                                ExifInterface.TAG_MODEL,
+                            )
+                            for (tag in tags) {
+                                val value = srcExif.getAttribute(tag)
+                                if (value != null) outExif.setAttribute(tag, value)
+                            }
+                            outExif.saveAttributes()
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Metadata loss is non-fatal; image already saved.
+                }
+            }
+
+            if (Build.VERSION.SDK_INT >= 29) {
+                values.clear()
+                values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                check(resolver.update(outUri, values, null, null) == 1) { "MediaStore publish failed" }
+            }
+            return outUri.toString()
+        } catch (t: Throwable) {
+            insertedUri?.let { uri -> runCatching { resolver.delete(uri, null, null) } }
+            throw t
+        } finally {
+            bitmap.recycle()
         }
-        bitmap.recycle()
     }
 
     private fun rotate(b: Bitmap, degrees: Float): Bitmap {
