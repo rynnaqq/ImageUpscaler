@@ -10,6 +10,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.rimuru.twobytwo.data.device.DeviceTiers
+import com.rimuru.twobytwo.data.work.EnhanceRequestJson
 import com.rimuru.twobytwo.data.work.EnhanceWorker
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.DenoiseStrength
@@ -22,8 +23,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import org.json.JSONArray
-import org.json.JSONObject
 import java.util.UUID
 
 /**
@@ -112,19 +111,8 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             faceRestoreStrength = s.faceStrength,
             accelerator = s.accelerator,
         )
-        val json = JSONObject().apply {
-            put("inputUris", JSONArray(request.inputUris))
-            put("scale", request.scale.multiplier)
-            put("mode", request.mode.name)
-            put("denoise", request.denoise.percent)
-            put("faceRestore", request.faceRestoreEnabled)
-            put("faceStrength", request.faceRestoreStrength)
-            put("accelerator", request.accelerator.name)
-            put("sharpen", request.sharpen)
-            put("deblurEnabled", request.deblurEnabled)
-            put("deblurStrength", request.deblurStrength)
-        }
-        val workData = Data.Builder().putString(EnhanceWorker.KEY_REQUEST, json.toString()).build()
+        val json = EnhanceRequestJson.encode(request)
+        val workData = Data.Builder().putString(EnhanceWorker.KEY_REQUEST, json).build()
         val work = OneTimeWorkRequestBuilder<EnhanceWorker>()
             .setInputData(workData)
             .build()

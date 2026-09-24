@@ -1,11 +1,15 @@
 package com.rimuru.twobytwo.domain.engine
 
-class DeblurPass(strength: Int) : ImagePass {
+class DeblurPass(
+    strength: Int,
+    private val isCancelled: () -> Boolean = { false },
+) : ImagePass {
     private val configuredStrength = strength.coerceIn(0, 100)
 
     override val id = "deblur"
 
     override fun apply(image: RgbaImage, context: PassContext): PassResult {
+        checkPassCancellation(isCancelled)
         val effectiveStrength = minOf(context.strength, configuredStrength).coerceIn(0, 100)
         if (effectiveStrength == 0) return PassResult(image, false, "disabled")
 
@@ -13,9 +17,15 @@ class DeblurPass(strength: Int) : ImagePass {
         val pixelCount = image.width.toLong() * image.height.toLong()
         require(pixelCount * 4L == image.pixels.size.toLong()) { "RGBA buffer size does not match dimensions" }
 
+        checkPassCancellation(isCancelled)
         val output = image.pixels.copyOf()
         val amount = 0.10f + 0.25f * effectiveStrength / 100f
-        ImageOps.unsharpMask(output, image.width, image.height, amount)
-        return PassResult(RgbaImage(output, image.width, image.height), true, "classical deblur fallback")
+        ImageOps.unsharpMask(output, image.width, image.height, amount, isCancelled)
+        checkPassCancellation(isCancelled)
+        return PassResult(
+            RgbaImage(output, image.width, image.height),
+            true,
+            "classical deblur fallback (model execution deferred)",
+        )
     }
 }

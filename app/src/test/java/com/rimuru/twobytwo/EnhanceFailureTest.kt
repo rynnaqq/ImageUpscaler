@@ -54,7 +54,10 @@ class EnhanceFailureTest {
         assertNull(failed.outputUri)
         assertEquals(ProcessStep.DONE, progress.last().step)
         assertEquals("content://output/output-1.png", progress.last().outputUri)
-        assertEquals("test; 1 ok, 1 failed", progress.last().backendUsed)
+        assertEquals(
+            "test; denoise=classical denoise fallback (model execution deferred); 1 ok, 1 failed",
+            progress.last().backendUsed,
+        )
     }
 
     @Test

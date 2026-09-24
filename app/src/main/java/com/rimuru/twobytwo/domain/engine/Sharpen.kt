@@ -16,10 +16,12 @@ object ImageOps {
         width: Int,
         height: Int,
         amount: Float,
+        isCancelled: () -> Boolean = { false },
     ) {
         require(rgba.size == width * height * 4)
         require(amount in 0f..2f)
         if (amount <= 0f) return
+        checkPassCancellation(isCancelled)
 
         val n = width * height
         // 3x3 box blur per channel (separable: horizontal then vertical)
@@ -27,6 +29,7 @@ object ImageOps {
 
         // Horizontal pass
         for (y in 0 until height) {
+            checkPassCancellation(isCancelled)
             val row = y * width
             for (x in 0 until width) {
                 val xm1 = (x - 1).coerceIn(0, width - 1)
@@ -43,6 +46,7 @@ object ImageOps {
         // Vertical pass into combined result
         val detail = FloatArray(3)
         for (y in 0 until height) {
+            checkPassCancellation(isCancelled)
             val ym1 = (y - 1).coerceIn(0, height - 1)
             val yp1 = (y + 1).coerceIn(0, height - 1)
             for (x in 0 until width) {
@@ -59,6 +63,7 @@ object ImageOps {
                 }
             }
         }
+        checkPassCancellation(isCancelled)
     }
 
     /**

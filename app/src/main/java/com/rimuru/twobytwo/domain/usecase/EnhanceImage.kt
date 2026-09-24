@@ -3,6 +3,7 @@ package com.rimuru.twobytwo.domain.usecase
 import com.rimuru.twobytwo.domain.engine.DeblurPass
 import com.rimuru.twobytwo.domain.engine.DenoisePass
 import com.rimuru.twobytwo.domain.engine.ImageOps
+import com.rimuru.twobytwo.domain.engine.checkPassCancellation
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.engine.ModelProvider
 import com.rimuru.twobytwo.domain.engine.PassContext
@@ -10,7 +11,6 @@ import com.rimuru.twobytwo.domain.engine.RgbaImage
 import com.rimuru.twobytwo.domain.engine.TensorCodec
 import com.rimuru.twobytwo.domain.engine.TileBlender
 import com.rimuru.twobytwo.domain.engine.TilingManager
-import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.EngineMode
 import com.rimuru.twobytwo.domain.model.JobProgress
@@ -135,6 +135,7 @@ class EnhanceImage(
                         sharpenMaxMegapixels = sharpenMaxMegapixels,
                         batchIndex = batchIndex,
                         batchTotal = total,
+                        isCancelled = isCancelled,
                     ) { progress ->
                         send(progress)
                     }
@@ -190,8 +191,12 @@ class EnhanceImage(
         sharpenMaxMegapixels: Double,
         batchIndex: Int,
         batchTotal: Int,
+        isCancelled: () -> Boolean,
         emit: (JobProgress) -> Unit,
     ): ProcessedImage {
+        val jobContext = currentCoroutineContext()
+        val cancellationRequested = { isCancelled() || !jobContext.isActive }
+        checkPassCancellation(cancellationRequested)
         val scale = request.scale.multiplier
         val dimensions = imageIo.measure(inputUri, maxMegapixels)
         val modelKey = when (request.mode) {
@@ -205,6 +210,7 @@ class EnhanceImage(
             dimensions.width.toLong() * scale,
             dimensions.height.toLong() * scale,
         )
+        checkPassCancellation(cancellationRequested)
         val tiling = TilingManager(
             imageWidth = dimensions.width,
             imageHeight = dimensions.height,
@@ -212,35 +218,46 @@ class EnhanceImage(
             tileSize = tileConfig.tileSize,
             overlap = TilingManager.overlapFor(tileConfig.tileSize),
         )
+        checkPassCancellation(cancellationRequested)
         val decoded = imageIo.decode(inputUri, maxMegapixels)
+        checkPassCancellation(cancellationRequested)
         val passProvider = modelProvider ?: NoModelProvider
         var restored = RgbaImage(decoded.rgba, decoded.width, decoded.height)
         val passStatuses = mutableListOf<String>()
         if (!request.denoise.isOff) {
-            val result = DenoisePass(request.denoise.percent).apply(
+            checkPassCancellation(cancellationRequested)
+            val result = DenoisePass(
+                strength = request.denoise.percent,
+                isCancelled = cancellationRequested,
+            ).apply(
                 restored,
                 PassContext(request.denoise.percent, passProvider),
             )
+            checkPassCancellation(cancellationRequested)
             restored = result.image
             passStatuses += "denoise=${result.detail}"
         }
         if (request.deblurEnabled) {
-            val result = DeblurPass(request.deblurStrength).apply(
+            checkPassCancellation(cancellationRequested)
+            val result = DeblurPass(
+                strength = request.deblurStrength,
+                isCancelled = cancellationRequested,
+            ).apply(
                 restored,
                 PassContext(request.deblurStrength, passProvider),
             )
+            checkPassCancellation(cancellationRequested)
             restored = result.image
             passStatuses += "deblur=${result.detail}"
         }
+        checkPassCancellation(cancellationRequested)
 
         val out = ByteArray(outputBytes)
         var tilesDone = 0
 
         val modelScale = InferenceEngine.scaleFor(modelKey)
         for (tile in tiling.tiles()) {
-            if (currentCoroutineContext().isActive.not()) {
-                throw kotlinx.coroutines.CancellationException("cancelled")
-            }
+            checkPassCancellation(cancellationRequested)
 
             val inPixels = tile.inW * tile.inH
             val inTile = ByteArray(inPixels * 4)
@@ -280,8 +297,15 @@ class EnhanceImage(
         // Stronger output: unsharp post-pass within memory-safe output size
         val outMp = tiling.outWidth.toLong() * tiling.outHeight / 1_000_000.0
         if (sharpenOutput && outMp <= sharpenMaxMegapixels) {
-            ImageOps.unsharpMask(out, tiling.outWidth, tiling.outHeight, amount = 0.45f)
+            ImageOps.unsharpMask(
+                out,
+                tiling.outWidth,
+                tiling.outHeight,
+                amount = 0.45f,
+                isCancelled = cancellationRequested,
+            )
         }
+        checkPassCancellation(cancellationRequested)
 
         emit(
             JobProgress(
@@ -291,13 +315,9 @@ class EnhanceImage(
                 batchTotal = batchTotal,
             ),
         )
+        checkPassCancellation(cancellationRequested)
         val encodedUri = imageIo.encode(out, tiling.outWidth, tiling.outHeight, outputUri, format, inputUri)
-        val terminalBackend = if (request.deblurEnabled || request.denoise != DenoiseStrength.DEFAULT) {
-            backendWithPasses(engine.backendName, passStatuses)
-        } else {
-            engine.backendName
-        }
-        return ProcessedImage(encodedUri, terminalBackend)
+        return ProcessedImage(encodedUri, backendWithPasses(engine.backendName, passStatuses))
     }
 
     private fun backendWithPasses(backend: String, passStatuses: List<String>): String =

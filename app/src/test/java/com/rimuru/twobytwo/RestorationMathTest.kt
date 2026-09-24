@@ -1,5 +1,6 @@
 package com.rimuru.twobytwo
 
+import com.rimuru.twobytwo.data.work.EnhanceRequestJson
 import com.rimuru.twobytwo.domain.engine.DeblurPass
 import com.rimuru.twobytwo.domain.engine.DenoisePass
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
@@ -9,7 +10,10 @@ import com.rimuru.twobytwo.domain.engine.RgbaImage
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
+import com.rimuru.twobytwo.domain.model.EngineMode
+import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -43,26 +47,60 @@ class RestorationMathTest {
     }
 
     @Test
-    fun `denoise strength reduces checkerboard variance`() {
-        val image = checkerboard(8, 8)
+    fun `denoise strength reduces checkerboard variance and preserves transparent alpha`() {
+        val image = checkerboardWithAlpha(8, 8)
 
         val result = DenoisePass(100).apply(image, PassContext(100, models))
 
         assertTrue(variance(result.image.pixels, 8, 8) < variance(image.pixels, 8, 8))
+        assertTrue(alphaValues(image.pixels).contentEquals(alphaValues(result.image.pixels)))
         assertTrue(result.usedFallback)
     }
 
     @Test
-    fun `deblur preserves dimensions and alpha`() {
-        val image = checkerboard(6, 4)
+    fun `deblur preserves dimensions and transparent alpha`() {
+        val image = checkerboardWithAlpha(6, 4)
 
         val result = DeblurPass(50).apply(image, PassContext(50, models))
 
         assertEquals(image.width, result.image.width)
         assertEquals(image.height, result.image.height)
-        assertTrue(result.image.pixels.indices.filter { it % 4 == 3 }
-            .all { result.image.pixels[it] == image.pixels[it] })
+        assertTrue(alphaValues(image.pixels).contentEquals(alphaValues(result.image.pixels)))
         assertTrue(result.usedFallback)
+    }
+
+    @Test
+    fun `denoise stops full image filtering when cancellation is requested`() {
+        var checks = 0
+        val error = runCatching {
+            DenoisePass(
+                strength = 100,
+                isCancelled = {
+                    checks++
+                    checks >= 3
+                },
+            ).apply(checkerboard(64, 64), PassContext(100, models))
+        }.exceptionOrNull()
+
+        assertTrue(error is CancellationException)
+        assertTrue(checks >= 3)
+    }
+
+    @Test
+    fun `deblur stops full image filtering when cancellation is requested`() {
+        var checks = 0
+        val error = runCatching {
+            DeblurPass(
+                strength = 50,
+                isCancelled = {
+                    checks++
+                    checks >= 3
+                },
+            ).apply(checkerboard(64, 64), PassContext(50, models))
+        }.exceptionOrNull()
+
+        assertTrue(error is CancellationException)
+        assertTrue(checks >= 3)
     }
 
     @Test
@@ -76,6 +114,27 @@ class RestorationMathTest {
         assertEquals(100, EnhanceRequest(inputUris, deblurEnabled = true, deblurStrength = 100).deblurStrength)
         assertRejects { EnhanceRequest(inputUris, deblurEnabled = true, deblurStrength = -1) }
         assertRejects { EnhanceRequest(inputUris, deblurEnabled = true, deblurStrength = 101) }
+    }
+
+    @Test
+    fun `worker JSON round trip preserves explicit request settings`() {
+        val request = EnhanceRequest(
+            inputUris = listOf("content://input/one", "content://input/two"),
+            scale = ScaleFactor.X8,
+            mode = EngineMode.PRECISION,
+            denoise = DenoiseStrength.DEFAULT,
+            faceRestoreEnabled = true,
+            faceRestoreStrength = 75,
+            accelerator = Accelerator.CPU,
+            useNeuralEngine = false,
+            sharpen = false,
+            deblurEnabled = true,
+            deblurStrength = 100,
+        )
+
+        val decoded = EnhanceRequestJson.decode(EnhanceRequestJson.encode(request))
+
+        assertEquals(request, decoded)
     }
 
     @Test
@@ -121,8 +180,11 @@ class RestorationMathTest {
             ),
             outputNameFor = { _, _ -> "enabled.png" },
         ).toList()
-        val defaultProgress = EnhanceImage(engine, imageIo).run(
-            request = EnhanceRequest(inputUris = listOf("content://input/photo")),
+        val explicitDefaultProgress = EnhanceImage(engine, imageIo).run(
+            request = EnhanceRequest(
+                inputUris = listOf("content://input/photo"),
+                denoise = DenoiseStrength.DEFAULT,
+            ),
             outputNameFor = { _, _ -> "default.png" },
         ).toList()
         val disabledProgress = EnhanceImage(engine, imageIo).run(
@@ -134,16 +196,17 @@ class RestorationMathTest {
             outputNameFor = { _, _ -> "disabled.png" },
         ).toList()
         val enabled = enabledProgress.last()
-        val default = defaultProgress.last()
+        val explicitDefault = explicitDefaultProgress.last()
         val disabled = disabledProgress.last()
 
-        assertTrue(enabledProgress.any { it.backendUsed?.contains("denoise") == true })
-        assertTrue(enabledProgress.any { it.backendUsed?.contains("deblur") == true })
+        val combinedStatus = enabledProgress.mapNotNull { it.backendUsed }
+            .first { it.contains("denoise") && it.contains("deblur") }
+        assertTrue(combinedStatus.indexOf("denoise") < combinedStatus.indexOf("deblur"))
         assertTrue(enabled.backendUsed!!.contains("denoise"))
         assertTrue(enabled.backendUsed!!.contains("deblur"))
         assertTrue(enabled.backendUsed!!.contains("fallback"))
-        assertTrue(defaultProgress.any { it.backendUsed?.contains("denoise") == true })
-        assertEquals("test; 1 ok, 0 failed", default.backendUsed)
+        assertTrue(explicitDefaultProgress.any { it.backendUsed?.contains("denoise") == true })
+        assertTrue(explicitDefault.backendUsed!!.contains("denoise"))
         assertEquals("test; 1 ok, 0 failed", disabled.backendUsed)
     }
 
@@ -161,6 +224,24 @@ class RestorationMathTest {
         }
         return RgbaImage(pixels, width, height)
     }
+
+    private fun checkerboardWithAlpha(width: Int, height: Int): RgbaImage {
+        val pixels = ByteArray(width * height * 4)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val index = (y * width + x) * 4
+                val value = if ((x + y) % 2 == 0) 0xFF.toByte() else 0
+                pixels[index] = value
+                pixels[index + 1] = value
+                pixels[index + 2] = value
+                pixels[index + 3] = ((x * 37 + y * 53) % 256).toByte()
+            }
+        }
+        return RgbaImage(pixels, width, height)
+    }
+
+    private fun alphaValues(pixels: ByteArray): ByteArray =
+        ByteArray(pixels.size / 4) { index -> pixels[index * 4 + 3] }
 
     private fun variance(pixels: ByteArray, width: Int, height: Int): Double {
         var total = 0.0

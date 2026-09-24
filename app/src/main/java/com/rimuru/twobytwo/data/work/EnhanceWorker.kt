@@ -15,17 +15,11 @@ import com.rimuru.twobytwo.data.engine.ModelManifest
 import com.rimuru.twobytwo.data.engine.ModelRegistry
 import com.rimuru.twobytwo.data.engine.OnnxInferenceEngine
 import com.rimuru.twobytwo.data.media.MediaStoreImageIo
-import com.rimuru.twobytwo.domain.model.Accelerator
-import com.rimuru.twobytwo.domain.model.DenoiseStrength
-import com.rimuru.twobytwo.domain.model.EnhanceRequest
-import com.rimuru.twobytwo.domain.model.EngineMode
 import com.rimuru.twobytwo.domain.model.JobProgress
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
 import kotlinx.coroutines.CancellationException
-import org.json.JSONArray
-import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -45,7 +39,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
     CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        val request = parseRequest(inputData.getString(KEY_REQUEST)) ?: return failure("Invalid enhancement request")
+        val request = EnhanceRequestJson.decode(inputData.getString(KEY_REQUEST)) ?: return failure("Invalid enhancement request")
         val baseName = inputData.getString(KEY_OUTPUT_NAME) ?: defaultBaseName()
         val tier = DeviceTiers.classify(applicationContext)
         val registry = ModelRegistry(applicationContext, ModelManifest.PLACEHOLDER)
@@ -154,26 +148,6 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             ForegroundInfo(NOTIFICATION_ID, notification)
         }
     }
-
-    private fun parseRequest(json: String?): EnhanceRequest? = runCatching {
-        val o = JSONObject(json ?: return null)
-        val uris = mutableListOf<String>()
-        val arr = o.getJSONArray("inputUris")
-        for (i in 0 until arr.length()) uris += arr.getString(i)
-        EnhanceRequest(
-            inputUris = uris,
-            scale = parseScaleFactor(o.getInt("scale")),
-            mode = if (o.getString("mode") == "PRECISION") EngineMode.PRECISION else EngineMode.CREATIVE,
-            denoise = DenoiseStrength(o.getInt("denoise")),
-            faceRestoreEnabled = o.getBoolean("faceRestore"),
-            faceRestoreStrength = o.getInt("faceStrength"),
-            accelerator = Accelerator.entries.first { it.name == o.optString("accelerator", "AUTO") },
-            useNeuralEngine = o.optBoolean("neural", true),
-            sharpen = o.optBoolean("sharpen", true),
-            deblurEnabled = o.optBoolean("deblurEnabled", false),
-            deblurStrength = o.optInt("deblurStrength", 50),
-        )
-    }.getOrNull()
 
     private fun defaultBaseName(): String {
         val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
