@@ -61,7 +61,6 @@ data class EnhanceRequest(
     val useNeuralEngine: Boolean = true,
     /** Unsharp-mask post-pass for extra punch (skipped over MP ceiling for memory safety). */
     val sharpen: Boolean = true,
-    val passes: List<PassRequest> = emptyList(),
 ) {
     init {
         require(faceRestoreStrength in 0..100) {
