@@ -205,7 +205,7 @@ class EnhanceImage(
         sharpenMaxMegapixels: Double,
         batchIndex: Int,
         batchTotal: Int,
-        isCancelled: () -> Boolean,
+        crossinline isCancelled: () -> Boolean,
         emit: (JobProgress) -> Unit,
     ): ProcessedImage {
         val jobContext = currentCoroutineContext()
