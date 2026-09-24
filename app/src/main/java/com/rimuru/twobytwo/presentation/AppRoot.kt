@@ -279,7 +279,7 @@ fun ConfigScreen(
             title = stringResource(R.string.config_scale),
             description = stringResource(R.string.config_scale_desc),
         ) {
-            val scales = listOf(ScaleFactor.X2, ScaleFactor.X4)
+            val scales = ScaleFactor.entries
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                 scales.forEachIndexed { i, sf ->
                     SegmentedButton(

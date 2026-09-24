@@ -9,7 +9,6 @@ import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.EngineMode
 import com.rimuru.twobytwo.domain.model.JobProgress
 import com.rimuru.twobytwo.domain.model.ProcessStep
-import com.rimuru.twobytwo.domain.model.ScaleFactor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
@@ -183,17 +182,13 @@ class EnhanceImage(
         batchTotal: Int,
         emit: (JobProgress) -> Unit,
     ): String {
-        val scale = when (request.scale) {
-            ScaleFactor.X2 -> 2
-            ScaleFactor.X4 -> 4
-            ScaleFactor.X8 -> throw UnsupportedOperationException("8x enhancement is not yet supported")
-        }
+        val scale = request.scale.multiplier
         val dimensions = imageIo.measure(inputUri, maxMegapixels)
         val modelKey = when (request.mode) {
             EngineMode.PRECISION ->
-                if (scale == 2) InferenceEngine.ModelKey.PRECISION_X2 else InferenceEngine.ModelKey.PRECISION_X4
+                if (scale == 4) InferenceEngine.ModelKey.PRECISION_X4 else InferenceEngine.ModelKey.PRECISION_X2
             EngineMode.CREATIVE ->
-                if (scale == 2) InferenceEngine.ModelKey.CREATIVE_X2 else InferenceEngine.ModelKey.CREATIVE_X4
+                if (scale == 4) InferenceEngine.ModelKey.CREATIVE_X4 else InferenceEngine.ModelKey.CREATIVE_X2
         }
 
         val outputBytes = outputBufferSize(
@@ -222,18 +217,16 @@ class EnhanceImage(
             copyTile(decoded.rgba, decoded.width, tile.inX, tile.inY, tile.inW, tile.inH, inTile)
 
             val inChw = TensorCodec.rgbaToChw(inTile, inPixels)
-            var outChw = engine.upscaleTile(inChw, tile.inW, tile.inH, modelKey)
-
-            // FR-1.4: 4× via chained 2× if the model is a 2× model
-            if (modelScale != scale) {
-                val midW = tile.inW * 2
-                val midH = tile.inH * 2
-                val nextKey = if (request.mode == EngineMode.PRECISION) {
-                    InferenceEngine.ModelKey.PRECISION_X2
-                } else {
-                    InferenceEngine.ModelKey.CREATIVE_X2
-                }
-                outChw = engine.upscaleTile(outChw, midW, midH, nextKey)
+            var passW = tile.inW
+            var passH = tile.inH
+            var outChw = inChw
+            var remainingScale = scale
+            while (remainingScale > 1) {
+                val passScale = minOf(modelScale, remainingScale)
+                outChw = engine.upscaleTile(outChw, passW, passH, modelKey)
+                passW *= passScale
+                passH *= passScale
+                remainingScale /= passScale
             }
 
             val tileOutW = tile.inW * scale

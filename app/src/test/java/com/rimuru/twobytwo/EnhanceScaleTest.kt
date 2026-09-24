@@ -9,8 +9,6 @@ import com.rimuru.twobytwo.domain.usecase.EnhanceImage
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class EnhanceScaleTest {
@@ -21,7 +19,9 @@ class EnhanceScaleTest {
     }
 
     @Test
-    fun `worker scale eight maps to x8`() {
+    fun `worker scale values map to matching factors`() {
+        assertEquals(ScaleFactor.X2, parseScaleFactor(2))
+        assertEquals(ScaleFactor.X4, parseScaleFactor(4))
         assertEquals(ScaleFactor.X8, parseScaleFactor(8))
     }
 
@@ -44,18 +44,15 @@ class EnhanceScaleTest {
     }
 
     @Test
-    fun `eight x request reports unsupported before image io`() = runBlocking {
-        var imageIoCalled = false
+    fun `eight x request chains two x model and encodes sixteen x sixteen`() = runBlocking {
+        val modelCalls = mutableListOf<InferenceEngine.ModelKey>()
+        val passDimensions = mutableListOf<EnhanceImage.Dimensions>()
+        var encodedDimensions: EnhanceImage.Dimensions? = null
         val imageIo = object : EnhanceImage.ImageIo {
-            override fun measure(uri: String, maxMegapixels: Int): EnhanceImage.Dimensions {
-                imageIoCalled = true
-                return EnhanceImage.Dimensions(2, 2)
-            }
+            override fun measure(uri: String, maxMegapixels: Int) = EnhanceImage.Dimensions(2, 2)
 
-            override fun decode(uri: String, maxMegapixels: Int): EnhanceImage.DecodedImage {
-                imageIoCalled = true
-                return EnhanceImage.DecodedImage(ByteArray(16), 2, 2)
-            }
+            override fun decode(uri: String, maxMegapixels: Int) =
+                EnhanceImage.DecodedImage(ByteArray(2 * 2 * 4), 2, 2)
 
             override fun encode(
                 rgba: ByteArray,
@@ -65,20 +62,26 @@ class EnhanceScaleTest {
                 format: EnhanceImage.OutputFormat,
                 exifSourceUri: String?,
             ): String {
-                imageIoCalled = true
-                return destinationUri
+                encodedDimensions = EnhanceImage.Dimensions(width, height)
+                return "content://output/$destinationUri"
             }
         }
         val engine = object : InferenceEngine {
             override val backendName = "test"
             override fun isAvailable(accelerator: Accelerator) = true
             override fun close() = Unit
+
             override fun upscaleTile(
                 input: FloatArray,
                 tileWidth: Int,
                 tileHeight: Int,
                 modelKey: InferenceEngine.ModelKey,
-            ): FloatArray = error("inference should not run")
+            ): FloatArray {
+                modelCalls += modelKey
+                passDimensions += EnhanceImage.Dimensions(tileWidth, tileHeight)
+                val outputPixels = tileWidth * 2 * tileHeight * 2
+                return FloatArray(3 * outputPixels)
+            }
         }
 
         val progress = EnhanceImage(engine, imageIo).run(
@@ -86,8 +89,23 @@ class EnhanceScaleTest {
             outputNameFor = { _, _ -> "output.png" },
         ).toList()
 
-        assertFalse(imageIoCalled)
-        assertEquals("8x enhancement is not yet supported", progress.last().error)
-        assertNull(progress.last().outputUri)
+        assertEquals("content://output/output.png", progress.last().outputUri)
+        assertEquals(
+            listOf(
+                InferenceEngine.ModelKey.CREATIVE_X2,
+                InferenceEngine.ModelKey.CREATIVE_X2,
+                InferenceEngine.ModelKey.CREATIVE_X2,
+            ),
+            modelCalls,
+        )
+        assertEquals(
+            listOf(
+                EnhanceImage.Dimensions(2, 2),
+                EnhanceImage.Dimensions(4, 4),
+                EnhanceImage.Dimensions(8, 8),
+            ),
+            passDimensions,
+        )
+        assertEquals(EnhanceImage.Dimensions(16, 16), encodedDimensions)
     }
 }
