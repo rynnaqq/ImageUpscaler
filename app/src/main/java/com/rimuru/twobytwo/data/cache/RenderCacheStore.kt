@@ -2,12 +2,14 @@ package com.rimuru.twobytwo.data.cache
 
 import java.io.File
 import java.io.IOException
+import java.nio.channels.FileChannel
 import java.nio.charset.StandardCharsets
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 
 data class CacheEntry(
@@ -21,15 +23,14 @@ class RenderCacheStore(
     private val maxBytes: Long,
 ) {
     private val cacheRoot = root.canonicalFile
-    private val monitor = Any()
-    private var lastAccess = 0L
+    private val lockKey = cacheRoot.canonicalPath
+    private val lockFile = File(cacheRoot, LOCK_FILE_NAME)
 
     init {
         require(maxBytes >= 0) { "maxBytes must be non-negative" }
     }
 
-    fun put(key: String, source: ByteArray): String = synchronized(monitor) {
-        ensureRoot()
+    fun put(key: String, source: ByteArray): String = withRootLock {
         val target = fileFor(key)
         if (Files.exists(target.toPath(), LinkOption.NOFOLLOW_LINKS) && !isCacheFile(target)) {
             throw IOException("Unsafe cache path: $target")
@@ -40,29 +41,52 @@ class RenderCacheStore(
         target.absolutePath
     }
 
-    fun get(key: String): ByteArray? = synchronized(monitor) {
+    fun get(key: String): ByteArray? = withRootLock {
         val file = fileFor(key)
-        if (!isCacheFile(file)) return null
+        if (!isCacheFile(file)) return@withRootLock null
         val source = file.readBytes()
         touchFile(file)
         source
     }
 
-    fun touch(key: String): Unit = synchronized(monitor) {
+    fun touch(key: String): Unit = withRootLock {
         val file = fileFor(key)
         if (isCacheFile(file)) touchFile(file)
     }
 
-    fun clear(): Unit = synchronized(monitor) {
-        cacheRoot.listFiles().orEmpty().forEach { file ->
+    fun clear(): Unit = withRootLock {
+        listRootFiles().forEach { file ->
             if (isCacheFile(file) || isTemporaryFile(file)) {
                 Files.deleteIfExists(file.toPath())
             }
         }
     }
 
-    fun totalBytes(): Long = synchronized(monitor) {
+    fun totalBytes(): Long = withRootLock {
         cacheEntries().sumOf(CacheEntry::bytes)
+    }
+
+    private fun <T> withRootLock(block: () -> T): T {
+        val monitor = monitorFor(lockKey)
+        return synchronized(monitor) {
+            ensureRoot()
+            val channel = FileChannel.open(
+                lockFile.toPath(),
+                StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE,
+                LinkOption.NOFOLLOW_LINKS,
+            )
+            try {
+                val fileLock = channel.lock()
+                try {
+                    block()
+                } finally {
+                    fileLock.release()
+                }
+            } finally {
+                channel.close()
+            }
+        }
     }
 
     private fun writeAtomically(target: File, source: ByteArray) {
@@ -77,7 +101,7 @@ class RenderCacheStore(
         } finally {
             try {
                 Files.deleteIfExists(temp)
-            } catch (cleanupError: IOException) {
+            } catch (cleanupError: Throwable) {
                 if (failure == null) throw cleanupError
                 failure.addSuppressed(cleanupError)
             }
@@ -100,11 +124,9 @@ class RenderCacheStore(
     }
 
     private fun touchFile(file: File) {
-        if (lastAccess == 0L) {
-            lastAccess = cacheEntries().maxOfOrNull(CacheEntry::lastAccess) ?: 0L
-        }
-        lastAccess = maxOf(System.currentTimeMillis(), lastAccess + 1)
-        if (!file.setLastModified(lastAccess)) {
+        val persistedLastAccess = cacheEntries().maxOfOrNull(CacheEntry::lastAccess) ?: 0L
+        val nextAccess = maxOf(System.currentTimeMillis(), persistedLastAccess + 1)
+        if (!file.setLastModified(nextAccess)) {
             throw IOException("Unable to update cache access time: $file")
         }
     }
@@ -122,7 +144,10 @@ class RenderCacheStore(
         check(total <= maxBytes) { "Unable to reduce render cache to $maxBytes bytes" }
     }
 
-    private fun cacheEntries(): List<CacheEntry> = cacheRoot.listFiles().orEmpty()
+    private fun listRootFiles(): Array<File> = cacheRoot.listFiles()
+        ?: throw IOException("Unable to list render cache directory: $cacheRoot")
+
+    private fun cacheEntries(): List<CacheEntry> = listRootFiles()
         .asSequence()
         .filter(::isCacheFile)
         .map { file ->
@@ -173,7 +198,15 @@ class RenderCacheStore(
     }
 
     private companion object {
+        private val monitorMap = mutableMapOf<String, Any>()
+        private val monitorMapLock = Any()
+
+        private fun monitorFor(key: String): Any = synchronized(monitorMapLock) {
+            monitorMap.getOrPut(key) { Any() }
+        }
+
         const val CACHE_EXTENSION = ".render"
+        const val LOCK_FILE_NAME = ".render.lock"
         const val TEMP_PREFIX = ".render-"
         const val TEMP_SUFFIX = ".tmp"
         val CACHE_FILE_PATTERN = Regex("[0-9a-f]{64}${Regex.escape(CACHE_EXTENSION)}")

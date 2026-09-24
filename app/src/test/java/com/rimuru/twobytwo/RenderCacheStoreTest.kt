@@ -6,10 +6,17 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 
 class RenderCacheStoreTest {
 
@@ -74,6 +81,64 @@ class RenderCacheStoreTest {
     }
 
     @Test
+    fun `touch - does not regress LRU order across store instances`() {
+        val root = Files.createTempDirectory("render-cache-cross-instance-touch").toFile()
+        val firstStore = RenderCacheStore(root, 6)
+        val secondStore = RenderCacheStore(root, 6)
+        val oldPath = File(firstStore.put("old", byteArrayOf(1, 2, 3)))
+        firstStore.put("new", byteArrayOf(4, 5, 6))
+        assertNotNull(secondStore.get("old"))
+        assertTrue(oldPath.setLastModified(System.currentTimeMillis() + 86_400_000L))
+
+        firstStore.touch("new")
+        firstStore.put("latest", byteArrayOf(7, 8, 9))
+
+        assertNull(firstStore.get("old"))
+        assertNotNull(firstStore.get("new"))
+        assertNotNull(firstStore.get("latest"))
+    }
+
+    @Test
+    fun `clear - waits for another store instance to finish put`() {
+        val delegate = Files.createTempDirectory("render-cache-shared-lock").toFile()
+        val listingEntered = CountDownLatch(1)
+        val releaseListing = CountDownLatch(1)
+        val root = BlockingListFile(delegate.path, listingEntered, releaseListing)
+        val firstStore = RenderCacheStore(root, 16)
+        val secondStore = RenderCacheStore(root, 16)
+        replaceCacheRoot(firstStore, root)
+        replaceCacheRoot(secondStore, root)
+        val putStarted = CountDownLatch(1)
+        val clearStarted = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        val putFuture = executor.submit<String> {
+            putStarted.countDown()
+            firstStore.put("entry", byteArrayOf(1, 2, 3))
+        }
+
+        try {
+            assertTrue(putStarted.await(5, TimeUnit.SECONDS))
+            assertTrue(listingEntered.await(5, TimeUnit.SECONDS))
+            val clearFuture = executor.submit<Unit> {
+                clearStarted.countDown()
+                secondStore.clear()
+            }
+            assertTrue(clearStarted.await(5, TimeUnit.SECONDS))
+            assertThrows(TimeoutException::class.java) {
+                clearFuture.get(250, TimeUnit.MILLISECONDS)
+            }
+            releaseListing.countDown()
+            putFuture.get(5, TimeUnit.SECONDS)
+            clearFuture.get(5, TimeUnit.SECONDS)
+        } finally {
+            releaseListing.countDown()
+            executor.shutdownNow()
+        }
+
+        assertNull(firstStore.get("entry"))
+    }
+
+    @Test
     fun `put - replaces an existing entry without double counting its bytes`() {
         val root = Files.createTempDirectory("render-cache-replace").toFile()
         val store = RenderCacheStore(root, 8)
@@ -109,10 +174,20 @@ class RenderCacheStoreTest {
         store.clear()
 
         assertEquals(0, store.totalBytes())
-        assertTrue(root.listFiles().orEmpty().isEmpty())
+        assertTrue(root.listFiles().orEmpty().none { it.name.endsWith(".render") })
         assertTrue(outside.isFile)
         assertArrayEquals(byteArrayOf(9), outside.readBytes())
         outside.delete()
+    }
+
+    @Test
+    fun `totalBytes - fails when the configured root is not a directory`() {
+        val root = Files.createTempFile("render-cache-invalid-root", ".tmp").toFile()
+        val store = RenderCacheStore(root, 16)
+
+        assertThrows(IOException::class.java) {
+            store.totalBytes()
+        }
     }
 
     @Test
@@ -124,5 +199,28 @@ class RenderCacheStoreTest {
         store.clear()
 
         assertTrue(root.listFiles().orEmpty().none { it.name.endsWith(".tmp") })
+    }
+
+    private fun replaceCacheRoot(store: RenderCacheStore, root: File) {
+        RenderCacheStore::class.java.getDeclaredField("cacheRoot").apply {
+            isAccessible = true
+            set(store, root)
+        }
+    }
+
+    private class BlockingListFile(
+        path: String,
+        private val listingEntered: CountDownLatch,
+        private val releaseListing: CountDownLatch,
+    ) : File(path) {
+        private val blockListing = AtomicBoolean(true)
+
+        override fun listFiles(): Array<File>? {
+            if (blockListing.compareAndSet(true, false)) {
+                listingEntered.countDown()
+                check(releaseListing.await(5, TimeUnit.SECONDS))
+            }
+            return super.listFiles()
+        }
     }
 }
