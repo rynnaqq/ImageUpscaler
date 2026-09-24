@@ -76,7 +76,7 @@ internal object EnhanceRequestJson {
     }
 
     private fun parseCacheLimit(json: JSONObject): Long {
-        if (!json.has("cacheLimitBytes") || json.isNull("cacheLimitBytes")) {
+        if (!json.has("cacheLimitBytes")) {
             return EnhanceRequest.DEFAULT_CACHE_LIMIT_BYTES
         }
         val value = json.opt("cacheLimitBytes") as? Number

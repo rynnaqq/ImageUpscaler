@@ -62,7 +62,7 @@ class CropProcessorTest {
         assertTrue(image.pixels.contentEquals(original))
         for (y in 0 until result.height) {
             for (x in 0 until result.width) {
-                val sourceIndex = ((y + 1) * 5 + (x + 1)) * 4
+                val sourceIndex = (y * 5 + (x + 1)) * 4
                 val resultIndex = (y * result.width + x) * 4
                 for (channel in 0..3) {
                     assertEquals(

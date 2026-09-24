@@ -90,11 +90,6 @@ class EnhanceImage(
             return (pixels * 4L).toInt()
         }
 
-        private fun validateOutputBufferSize(outWidth: Long, outHeight: Long) {
-            val pixels = outputPixels(outWidth, outHeight)
-            require(pixels <= Int.MAX_VALUE.toLong() / 4L) { "output buffer exceeds JVM array limit" }
-        }
-
         internal fun outputBufferSize(outWidth: Long, outHeight: Long, maxOutputMegapixels: Double): Int {
             require(maxOutputMegapixels.isFinite() && maxOutputMegapixels > 0.0) {
                 "max output megapixels must be finite and positive"
@@ -248,7 +243,7 @@ class EnhanceImage(
                 if (scale == 4) InferenceEngine.ModelKey.CREATIVE_X4 else InferenceEngine.ModelKey.CREATIVE_X2
         }
         if (request.cropPreset == null) {
-            validateOutputBufferSize(
+            outputBufferSize(
                 dimensions.width.toLong() * scale,
                 dimensions.height.toLong() * scale,
             )

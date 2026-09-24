@@ -58,6 +58,104 @@ class WorkflowIntegrationTest {
     }
 
     @Test
+    fun `settings snapshot excludes input uris and keeps stable key order`() {
+        val settings = JSONObject(
+            EnhanceRequestJson.encodeSettings(
+                EnhanceRequest(inputUris = listOf("content://input/one"), cropPreset = CropPreset.SQUARE),
+            ),
+        )
+
+        assertEquals(
+            listOf(
+                "scale",
+                "mode",
+                "denoise",
+                "faceRestore",
+                "faceStrength",
+                "accelerator",
+                "neural",
+                "sharpen",
+                "deblurEnabled",
+                "deblurStrength",
+                "scratchRepairEnabled",
+                "scratchRepairStrength",
+                "colorizeEnabled",
+                "colorizeStrength",
+                "cropPreset",
+                "cacheLimitBytes",
+            ),
+            settings.keys().asSequence().toList(),
+        )
+        assertFalse(settings.has("inputUris"))
+    }
+
+    @Test
+    fun `invalid crop and cache values are rejected`() {
+        val base = JSONObject(EnhanceRequestJson.encode(EnhanceRequest(inputUris = listOf("content://input/invalid"))))
+        val invalid = listOf(
+            JSONObject(base.toString()).put("cropPreset", "UNKNOWN"),
+            JSONObject(base.toString()).put("cacheLimitBytes", JSONObject.NULL),
+            JSONObject(base.toString()).put("cacheLimitBytes", 1.5),
+            JSONObject(base.toString()).put("cacheLimitBytes", -1),
+            JSONObject(base.toString()).put("cacheLimitBytes", EnhanceRequest.MIN_CACHE_LIMIT_BYTES - 1),
+            JSONObject(base.toString()).put("cacheLimitBytes", EnhanceRequest.MAX_CACHE_LIMIT_BYTES + 1),
+        )
+
+        invalid.forEach { assertNull(EnhanceRequestJson.decode(it.toString())) }
+    }
+
+    @Test
+    fun `cache minimum and maximum are accepted`() {
+        listOf(EnhanceRequest.MIN_CACHE_LIMIT_BYTES, EnhanceRequest.MAX_CACHE_LIMIT_BYTES).forEach { limit ->
+            val encoded = EnhanceRequestJson.encode(
+                EnhanceRequest(inputUris = listOf("content://input/limit"), cacheLimitBytes = limit),
+            )
+
+            assertEquals(limit, EnhanceRequestJson.decode(encoded)?.cacheLimitBytes)
+        }
+    }
+
+    @Test
+    fun `persistence callback failure escapes before the next item`() {
+        var decodeCount = 0
+        val imageIo = object : EnhanceImage.ImageIo {
+            override fun measure(uri: String, maxMegapixels: Int) = EnhanceImage.Dimensions(1, 1)
+
+            override fun decode(uri: String, maxMegapixels: Int): EnhanceImage.DecodedImage {
+                decodeCount++
+                return EnhanceImage.DecodedImage(ByteArray(4), 1, 1)
+            }
+
+            override fun encode(
+                rgba: ByteArray,
+                width: Int,
+                height: Int,
+                destinationUri: String,
+                format: EnhanceImage.OutputFormat,
+                exifSourceUri: String?,
+            ): String = "content://media/$destinationUri"
+        }
+        val failure = runCatching {
+            runBlocking {
+                EnhanceImage(testEngine(), imageIo).run(
+                    request = EnhanceRequest(
+                        inputUris = listOf("content://input/first", "content://input/second"),
+                        denoise = DenoiseStrength.OFF,
+                        sharpen = false,
+                    ),
+                    outputNameFor = { index, _ -> "output-$index.png" },
+                    onItemCompleted = { index, _ ->
+                        if (index == 0) error("history failed")
+                    },
+                ).toList()
+            }
+        }.exceptionOrNull()
+
+        assertEquals("history failed", failure?.message)
+        assertEquals(1, decodeCount)
+    }
+
+    @Test
     fun `crop preset is applied before restoration and upscale`() = runBlocking {
         val observation = runObservation(CropPreset.SQUARE)
 
