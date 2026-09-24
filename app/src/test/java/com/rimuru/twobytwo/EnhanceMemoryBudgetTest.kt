@@ -21,6 +21,14 @@ class EnhanceMemoryBudgetTest {
     }
 
     @Test
+    fun `default budget accepts twelve megapixel four x output`() {
+        assertEquals(
+            768_000_000,
+            EnhanceImage.outputBufferSize(48_000, 4_000, EnhanceImage.DEFAULT_MAX_OUTPUT_MEGAPIXELS),
+        )
+    }
+
+    @Test
     fun `output buffer rejects pixels over budget`() {
         val error = runCatching {
             EnhanceImage.outputBufferSize(5_000, 5_000, 24.0)

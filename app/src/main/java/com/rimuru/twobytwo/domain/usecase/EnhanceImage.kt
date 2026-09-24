@@ -60,7 +60,7 @@ class EnhanceImage(
     data class BatchResult(val succeeded: Int, val failed: Int, val failedUris: List<String>)
 
     companion object {
-        internal const val DEFAULT_MAX_OUTPUT_MEGAPIXELS = 64.0
+        internal const val DEFAULT_MAX_OUTPUT_MEGAPIXELS = 256.0
 
         internal fun outputBufferSize(outWidth: Long, outHeight: Long, maxOutputMegapixels: Double): Int {
             require(outWidth > 0 && outHeight > 0) { "output dimensions must be positive" }
