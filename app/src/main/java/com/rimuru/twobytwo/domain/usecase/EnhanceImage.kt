@@ -1,10 +1,16 @@
 package com.rimuru.twobytwo.domain.usecase
 
+import com.rimuru.twobytwo.domain.engine.DeblurPass
+import com.rimuru.twobytwo.domain.engine.DenoisePass
 import com.rimuru.twobytwo.domain.engine.ImageOps
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
+import com.rimuru.twobytwo.domain.engine.ModelProvider
+import com.rimuru.twobytwo.domain.engine.PassContext
+import com.rimuru.twobytwo.domain.engine.RgbaImage
 import com.rimuru.twobytwo.domain.engine.TensorCodec
 import com.rimuru.twobytwo.domain.engine.TileBlender
 import com.rimuru.twobytwo.domain.engine.TilingManager
+import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.EngineMode
 import com.rimuru.twobytwo.domain.model.JobProgress
@@ -28,6 +34,7 @@ class EnhanceImage(
     private val engine: InferenceEngine,
     private val imageIo: ImageIo,
     private val tileConfig: TileConfig = TileConfig(),
+    private val modelProvider: ModelProvider? = null,
 ) {
     interface ImageIo {
         fun measure(uri: String, maxMegapixels: Int): Dimensions
@@ -118,7 +125,7 @@ class EnhanceImage(
 
                 try {
                     send(JobProgress(ProcessStep.PREPARING, batchIndex = batchIndex, batchTotal = total))
-                    val encodedUri = processOne(
+                    val processed = processOne(
                         request = request,
                         inputUri = inputUri,
                         outputUri = outputNameFor(batchIndex, inputUri),
@@ -131,8 +138,8 @@ class EnhanceImage(
                     ) { progress ->
                         send(progress)
                     }
-                    backendUsed = engine.backendName
-                    if (outputUri == null) outputUri = encodedUri
+                    backendUsed = processed.backendUsed
+                    if (outputUri == null) outputUri = processed.outputUri
                     succeeded++
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
@@ -184,7 +191,7 @@ class EnhanceImage(
         batchIndex: Int,
         batchTotal: Int,
         emit: (JobProgress) -> Unit,
-    ): String {
+    ): ProcessedImage {
         val scale = request.scale.multiplier
         val dimensions = imageIo.measure(inputUri, maxMegapixels)
         val modelKey = when (request.mode) {
@@ -206,6 +213,26 @@ class EnhanceImage(
             overlap = TilingManager.overlapFor(tileConfig.tileSize),
         )
         val decoded = imageIo.decode(inputUri, maxMegapixels)
+        val passProvider = modelProvider ?: NoModelProvider
+        var restored = RgbaImage(decoded.rgba, decoded.width, decoded.height)
+        val passStatuses = mutableListOf<String>()
+        if (!request.denoise.isOff) {
+            val result = DenoisePass(request.denoise.percent).apply(
+                restored,
+                PassContext(request.denoise.percent, passProvider),
+            )
+            restored = result.image
+            passStatuses += "denoise=${result.detail}"
+        }
+        if (request.deblurEnabled) {
+            val result = DeblurPass(request.deblurStrength).apply(
+                restored,
+                PassContext(request.deblurStrength, passProvider),
+            )
+            restored = result.image
+            passStatuses += "deblur=${result.detail}"
+        }
+
         val out = ByteArray(outputBytes)
         var tilesDone = 0
 
@@ -217,7 +244,7 @@ class EnhanceImage(
 
             val inPixels = tile.inW * tile.inH
             val inTile = ByteArray(inPixels * 4)
-            copyTile(decoded.rgba, decoded.width, tile.inX, tile.inY, tile.inW, tile.inH, inTile)
+            copyTile(restored.pixels, restored.width, tile.inX, tile.inY, tile.inW, tile.inH, inTile)
 
             val inChw = TensorCodec.rgbaToChw(inTile, inPixels)
             var passW = tile.inW
@@ -243,7 +270,7 @@ class EnhanceImage(
                     step = ProcessStep.PROCESSING_TILES,
                     tilesDone = tilesDone,
                     tilesTotal = tiling.tileCount,
-                    backendUsed = engine.backendName,
+                    backendUsed = backendWithPasses(engine.backendName, passStatuses),
                     batchIndex = batchIndex,
                     batchTotal = batchTotal,
                 ),
@@ -256,8 +283,30 @@ class EnhanceImage(
             ImageOps.unsharpMask(out, tiling.outWidth, tiling.outHeight, amount = 0.45f)
         }
 
-        emit(JobProgress(ProcessStep.BLENDING, batchIndex = batchIndex, batchTotal = batchTotal))
-        return imageIo.encode(out, tiling.outWidth, tiling.outHeight, outputUri, format, inputUri)
+        emit(
+            JobProgress(
+                step = ProcessStep.BLENDING,
+                backendUsed = if (passStatuses.isEmpty()) null else backendWithPasses(engine.backendName, passStatuses),
+                batchIndex = batchIndex,
+                batchTotal = batchTotal,
+            ),
+        )
+        val encodedUri = imageIo.encode(out, tiling.outWidth, tiling.outHeight, outputUri, format, inputUri)
+        val terminalBackend = if (request.deblurEnabled || request.denoise != DenoiseStrength.DEFAULT) {
+            backendWithPasses(engine.backendName, passStatuses)
+        } else {
+            engine.backendName
+        }
+        return ProcessedImage(encodedUri, terminalBackend)
+    }
+
+    private fun backendWithPasses(backend: String, passStatuses: List<String>): String =
+        if (passStatuses.isEmpty()) backend else "$backend; ${passStatuses.joinToString("; ")}"
+
+    private data class ProcessedImage(val outputUri: String, val backendUsed: String)
+
+    private object NoModelProvider : ModelProvider {
+        override fun load(key: InferenceEngine.ModelKey) = null
     }
 
     private fun copyTile(

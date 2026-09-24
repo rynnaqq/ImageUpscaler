@@ -121,6 +121,8 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             put("faceStrength", request.faceRestoreStrength)
             put("accelerator", request.accelerator.name)
             put("sharpen", request.sharpen)
+            put("deblurEnabled", request.deblurEnabled)
+            put("deblurStrength", request.deblurStrength)
         }
         val workData = Data.Builder().putString(EnhanceWorker.KEY_REQUEST, json.toString()).build()
         val work = OneTimeWorkRequestBuilder<EnhanceWorker>()

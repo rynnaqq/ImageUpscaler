@@ -61,10 +61,15 @@ data class EnhanceRequest(
     val useNeuralEngine: Boolean = true,
     /** Unsharp-mask post-pass for extra punch (skipped over MP ceiling for memory safety). */
     val sharpen: Boolean = true,
+    val deblurEnabled: Boolean = false,
+    val deblurStrength: Int = 50,
 ) {
     init {
         require(faceRestoreStrength in 0..100) {
             "face restore strength must be 0..100, got $faceRestoreStrength"
+        }
+        require(deblurStrength in 0..100) {
+            "deblur strength must be 0..100, got $deblurStrength"
         }
     }
 }

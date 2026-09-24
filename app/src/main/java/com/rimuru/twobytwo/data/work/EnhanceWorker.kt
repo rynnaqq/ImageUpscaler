@@ -59,6 +59,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                 engine,
                 MediaStoreImageIo(applicationContext),
                 EnhanceImage.TileConfig(tier.recommendedTileSize),
+                modelProvider = registry,
             )
             val flow = useCase.run(
                 request = request,
@@ -169,6 +170,8 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             accelerator = Accelerator.entries.first { it.name == o.optString("accelerator", "AUTO") },
             useNeuralEngine = o.optBoolean("neural", true),
             sharpen = o.optBoolean("sharpen", true),
+            deblurEnabled = o.optBoolean("deblurEnabled", false),
+            deblurStrength = o.optInt("deblurStrength", 50),
         )
     }.getOrNull()
 
