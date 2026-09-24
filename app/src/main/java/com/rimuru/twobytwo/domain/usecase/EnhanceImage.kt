@@ -62,20 +62,29 @@ class EnhanceImage(
     companion object {
         internal const val DEFAULT_MAX_OUTPUT_MEGAPIXELS = 256.0
 
-        internal fun outputBufferSize(outWidth: Long, outHeight: Long, maxOutputMegapixels: Double): Int {
+        private fun outputPixels(outWidth: Long, outHeight: Long): Long {
             require(outWidth > 0 && outHeight > 0) { "output dimensions must be positive" }
-            require(maxOutputMegapixels.isFinite() && maxOutputMegapixels > 0.0) {
-                "max output megapixels must be finite and positive"
-            }
             require(outWidth <= Int.MAX_VALUE.toLong() && outHeight <= Int.MAX_VALUE.toLong()) {
                 "output dimensions exceed JVM array limit"
             }
-            val pixels = outWidth * outHeight
+            return outWidth * outHeight
+        }
+
+        private fun outputBufferSize(outWidth: Long, outHeight: Long): Int {
+            val pixels = outputPixels(outWidth, outHeight)
+            require(pixels <= Int.MAX_VALUE.toLong() / 4L) { "output buffer exceeds JVM array limit" }
+            return (pixels * 4L).toInt()
+        }
+
+        internal fun outputBufferSize(outWidth: Long, outHeight: Long, maxOutputMegapixels: Double): Int {
+            require(maxOutputMegapixels.isFinite() && maxOutputMegapixels > 0.0) {
+                "max output megapixels must be finite and positive"
+            }
+            val pixels = outputPixels(outWidth, outHeight)
             require(pixels <= maxOutputMegapixels * 1_000_000.0) {
                 "output ${pixels / 1_000_000.0} MP exceeds cap $maxOutputMegapixels MP"
             }
-            require(pixels <= Int.MAX_VALUE.toLong() / 4L) { "output buffer exceeds JVM array limit" }
-            return (pixels * 4L).toInt()
+            return outputBufferSize(outWidth, outHeight)
         }
     }
 
@@ -92,7 +101,6 @@ class EnhanceImage(
         maxMegapixels: Int = 48,
         sharpenMaxMegapixels: Double = 24.0,
         isCancelled: () -> Boolean = { false },
-        maxOutputMegapixels: Double = DEFAULT_MAX_OUTPUT_MEGAPIXELS,
     ): Flow<JobProgress> = channelFlow {
         withContext(Dispatchers.Default) {
             val total = request.inputUris.size
@@ -120,7 +128,6 @@ class EnhanceImage(
                         sharpenMaxMegapixels = sharpenMaxMegapixels,
                         batchIndex = batchIndex,
                         batchTotal = total,
-                        maxOutputMegapixels = maxOutputMegapixels,
                     ) { progress ->
                         send(progress)
                     }
@@ -172,7 +179,6 @@ class EnhanceImage(
         sharpenMaxMegapixels: Double,
         batchIndex: Int,
         batchTotal: Int,
-        maxOutputMegapixels: Double,
         emit: (JobProgress) -> Unit,
     ): String {
         val scale = when (request.scale) {
@@ -191,7 +197,6 @@ class EnhanceImage(
         val outputBytes = outputBufferSize(
             dimensions.width.toLong() * scale,
             dimensions.height.toLong() * scale,
-            maxOutputMegapixels,
         )
         val tiling = TilingManager(
             imageWidth = dimensions.width,

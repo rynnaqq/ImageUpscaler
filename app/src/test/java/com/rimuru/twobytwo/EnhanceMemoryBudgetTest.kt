@@ -13,23 +13,41 @@ class EnhanceMemoryBudgetTest {
     }
 
     @Test
-    fun `default budget accepts twelve megapixel two x output`() {
+    fun `twelve megapixel two x output stays within technical boundary`() {
         assertEquals(
             192_000_000,
-            EnhanceImage.outputBufferSize(24_000, 2_000, EnhanceImage.DEFAULT_MAX_OUTPUT_MEGAPIXELS),
+            EnhanceImage.outputBufferSize(24_000, 2_000, Double.MAX_VALUE),
         )
     }
 
     @Test
-    fun `default budget accepts twelve megapixel four x output`() {
+    fun `twelve megapixel four x output stays within technical boundary`() {
         assertEquals(
             768_000_000,
-            EnhanceImage.outputBufferSize(48_000, 4_000, EnhanceImage.DEFAULT_MAX_OUTPUT_MEGAPIXELS),
+            EnhanceImage.outputBufferSize(48_000, 4_000, Double.MAX_VALUE),
         )
     }
 
     @Test
-    fun `output buffer rejects pixels over budget`() {
+    fun `eight x output stays within technical buffer boundary`() {
+        assertEquals(
+            1_536_000_000,
+            EnhanceImage.outputBufferSize(48_000, 8_000, Double.MAX_VALUE),
+        )
+    }
+
+    @Test
+    fun `output buffer rejects pixels over JVM array limit`() {
+        val error = runCatching {
+            EnhanceImage.outputBufferSize(1, Int.MAX_VALUE.toLong() / 4L + 1L, Double.MAX_VALUE)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalArgumentException)
+        assertTrue(error?.message?.contains("JVM array limit") == true)
+    }
+
+    @Test
+    fun `output buffer rejects pixels over explicit test budget`() {
         val error = runCatching {
             EnhanceImage.outputBufferSize(5_000, 5_000, 24.0)
         }.exceptionOrNull()
