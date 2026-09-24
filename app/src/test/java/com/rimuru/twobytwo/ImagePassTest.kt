@@ -1,11 +1,15 @@
 package com.rimuru.twobytwo
 
+import com.rimuru.twobytwo.domain.engine.ImagePass
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.engine.ModelProvider
 import com.rimuru.twobytwo.domain.engine.PassContext
+import com.rimuru.twobytwo.domain.engine.PassResult
+import com.rimuru.twobytwo.domain.engine.RgbaImage
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.PassRequest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -14,6 +18,28 @@ class ImagePassTest {
 
     private val models = object : ModelProvider {
         override fun load(key: InferenceEngine.ModelKey) = null
+    }
+
+    @Test
+    fun `disabled image pass preserves the input pixel reference`() {
+        val pixels = ByteArray(4) { 0x7F }
+        val image = RgbaImage(pixels, 1, 1)
+
+        val result = InterfaceContractImagePassFake().apply(image, PassContext(0, models))
+
+        assertSame(pixels, result.image.pixels)
+        assertFalse(result.usedFallback)
+    }
+
+    @Test
+    fun `enabled contract fake reports fallback without changing pixels`() {
+        val pixels = ByteArray(4) { 0x7F }
+        val image = RgbaImage(pixels, 1, 1)
+
+        val result = InterfaceContractImagePassFake().apply(image, PassContext(50, models))
+
+        assertSame(pixels, result.image.pixels)
+        assertTrue(result.usedFallback)
     }
 
     @Test
@@ -56,6 +82,17 @@ class ImagePassTest {
         val exposed: ModelProvider = context.models
 
         assertSame(provider, exposed)
+    }
+
+    private class InterfaceContractImagePassFake : ImagePass {
+        override val id = "interface-contract-fake"
+
+        override fun apply(image: RgbaImage, context: PassContext): PassResult =
+            PassResult(
+                image = image,
+                usedFallback = context.strength > 0,
+                detail = if (context.strength == 0) "disabled" else "test fallback",
+            )
     }
 
     private fun assertRejects(block: () -> Unit) {
