@@ -8,6 +8,8 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -205,6 +207,7 @@ fun HomeScreen(
 }
 
 /** S2 — Configuration: original flat layout, each feature with icon + description. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ConfigScreen(
     state: EnhanceViewModel.UiState,
@@ -336,20 +339,21 @@ fun ConfigScreen(
             }
         }
 
-        // Accelerator
+        // Accelerator — chips in a FlowRow: 4 labels don't fit one segmented row on phones
         FeatureRow(
             icon = Icons.Filled.Memory,
             title = stringResource(R.string.config_accelerator),
             description = stringResource(R.string.config_accel_desc),
         ) {
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                val accelerators = Accelerator.entries
-                accelerators.forEachIndexed { i, acc ->
-                    SegmentedButton(
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Accelerator.entries.forEach { acc ->
+                    FilterChip(
                         selected = state.accelerator == acc,
                         onClick = { onIntent(EnhanceViewModel.Intent.SetAccelerator(acc)) },
-                        shape = SegmentedButtonDefaults.itemShape(i, accelerators.size),
-                    ) { Text(stringResource(accelLabel(acc))) }
+                        label = { Text(stringResource(accelLabel(acc))) },
+                    )
                 }
             }
         }
