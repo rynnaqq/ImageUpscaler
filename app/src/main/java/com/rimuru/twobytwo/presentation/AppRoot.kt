@@ -128,7 +128,7 @@ fun AppRoot(initialSharedUri: String?) {
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
-                                stringResource(R.string.error_job_failed),
+                                state.error ?: stringResource(R.string.error_job_failed),
                                 style = MaterialTheme.typography.titleMedium,
                             )
                             Spacer(Modifier.height(16.dp))

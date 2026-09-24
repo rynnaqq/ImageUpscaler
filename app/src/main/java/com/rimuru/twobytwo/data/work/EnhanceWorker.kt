@@ -38,7 +38,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
     CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        val request = parseRequest(inputData.getString(KEY_REQUEST)) ?: return Result.failure()
+        val request = parseRequest(inputData.getString(KEY_REQUEST)) ?: return failure("Invalid enhancement request")
         val baseName = inputData.getString(KEY_OUTPUT_NAME) ?: defaultBaseName()
         val tier = DeviceTiers.classify(applicationContext)
         val engine = OnnxInferenceEngine(applicationContext, ModelManifest.PLACEHOLDER)
@@ -69,6 +69,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                         KEY_BATCH_INDEX to progress.batchIndex,
                         KEY_BATCH_TOTAL to progress.batchTotal,
                         KEY_OUTPUT_URI to progress.outputUri.orEmpty(),
+                        KEY_ERROR to progress.error.orEmpty(),
                         KEY_BATCH_SUCCEEDED to progress.backendUsed?.takeLastWhile { it.isDigit() }.orEmpty(),
                     ),
                 )
@@ -79,15 +80,22 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             return if (last?.step == ProcessStep.DONE && !outputUri.isNullOrBlank()) {
                 Result.success(androidx.work.workDataOf(KEY_OUTPUT_URI to outputUri))
             } else {
-                Result.failure()
+                failure(last?.error)
             }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
-            return Result.failure()
+            return failure(t.message)
         } finally {
             engine.close()
         }
     }
+
+    private fun failure(message: String?): Result = Result.failure(
+        androidx.work.workDataOf(
+            KEY_ERROR to message?.takeIf { it.isNotBlank() }?.take(200)
+                ?: applicationContext.getString(R.string.error_job_failed),
+        ),
+    )
 
     private fun stepText(p: JobProgress): String {
         val batchPrefix = if (p.batchTotal > 1) "(${p.batchIndex + 1}/${p.batchTotal}) " else ""
@@ -157,6 +165,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         const val KEY_BATCH_INDEX = "batchIndex"
         const val KEY_BATCH_TOTAL = "batchTotal"
         const val KEY_OUTPUT_URI = "outputUri"
+        const val KEY_ERROR = "error"
         const val KEY_BATCH_SUCCEEDED = "batchSucceeded"
         const val CHANNEL_ID = "enhance_jobs"
         const val NOTIFICATION_ID = 42

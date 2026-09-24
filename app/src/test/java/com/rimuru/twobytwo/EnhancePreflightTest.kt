@@ -57,5 +57,6 @@ class EnhancePreflightTest {
         assertFalse(encodeCalled)
         assertTrue(progress.last().outputUri == null)
         assertTrue(progress.any { it.backendUsed?.contains("exceeds") == true })
+        assertTrue(progress.last().error?.contains("exceeds") == true)
     }
 }

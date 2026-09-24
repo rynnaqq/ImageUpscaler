@@ -69,6 +69,7 @@ data class JobProgress(
     val tilesTotal: Int = 0,
     val backendUsed: String? = null,
     val outputUri: String? = null,
+    val error: String? = null,
     val batchIndex: Int = 0,
     val batchTotal: Int = 1,
 ) {

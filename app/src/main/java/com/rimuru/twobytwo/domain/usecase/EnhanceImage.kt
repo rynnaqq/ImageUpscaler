@@ -99,6 +99,7 @@ class EnhanceImage(
             var succeeded = 0
             var failed = 0
             var outputUri: String? = null
+            var lastError: String? = null
             val failedUris = mutableListOf<String>()
 
             for ((batchIndex, inputUri) in request.inputUris.withIndex()) {
@@ -129,6 +130,10 @@ class EnhanceImage(
                     throw e
                 } catch (t: Throwable) {
                     // Per-image isolation: log-and-continue, batch survives (batch stability)
+                    val message = t.message?.takeIf { it.isNotBlank() }
+                        ?: t::class.java.simpleName
+                        ?: "Enhancement failed"
+                    lastError = message
                     failed++
                     failedUris += inputUri
                     send(
@@ -136,7 +141,8 @@ class EnhanceImage(
                             ProcessStep.PREPARING,
                             batchIndex = batchIndex,
                             batchTotal = total,
-                            backendUsed = "error: ${t.message?.take(80)}",
+                            backendUsed = "error: ${message.take(80)}",
+                            error = message,
                         ),
                     )
                 }
@@ -149,6 +155,7 @@ class EnhanceImage(
                     batchTotal = total,
                     backendUsed = "$succeeded ok, $failed failed",
                     outputUri = outputUri,
+                    error = if (outputUri == null) lastError else null,
                 ),
             )
         }

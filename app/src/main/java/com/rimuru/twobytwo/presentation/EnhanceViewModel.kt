@@ -163,11 +163,14 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                         val outputUri = (info.outputData.getString(EnhanceWorker.KEY_OUTPUT_URI)
                             ?: info.progress.getString(EnhanceWorker.KEY_OUTPUT_URI))
                             ?.takeIf { it.isNotBlank() }
+                        val error = (info.outputData.getString(EnhanceWorker.KEY_ERROR)
+                            ?: info.progress.getString(EnhanceWorker.KEY_ERROR))
+                            ?.takeIf { it.isNotBlank() }
                         if (outputUri == null) {
                             _state.update {
                                 it.copy(
                                     progress = null,
-                                    error = getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed),
+                                    error = error ?: getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed),
                                 )
                             }
                         } else {
@@ -179,8 +182,14 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                             }
                         }
                     }
-                    WorkInfo.State.FAILED -> _state.update {
-                        it.copy(progress = null, error = getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed))
+                    WorkInfo.State.FAILED -> {
+                        val error = info.outputData.getString(EnhanceWorker.KEY_ERROR)?.takeIf { it.isNotBlank() }
+                        _state.update {
+                            it.copy(
+                                progress = null,
+                                error = error ?: getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed),
+                            )
+                        }
                     }
                     WorkInfo.State.CANCELLED -> _state.update { it.copy(progress = null) }
                     else -> {}
