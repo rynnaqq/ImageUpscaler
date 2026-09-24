@@ -139,26 +139,33 @@ class HistoryStoreTest {
     @Test
     fun `concurrent duplicate calls create one child`() {
         val root = Files.createTempDirectory("history-concurrent-duplicate").toFile()
-        val store = FileHistoryStore(root)
+        val firstStore = FileHistoryStore(root)
+        val secondStore = FileHistoryStore(root)
         val parent = record("job-parent", createdAt = 10L)
-        store.save(parent)
+        firstStore.save(parent)
         val start = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(2)
 
         try {
-            val results = listOf(
+            val futures = listOf(
                 executor.submit<HistoryRecord?> {
-                    start.await()
-                    store.duplicateSettings(parent.id, "job-child")
+                    check(start.await(5, TimeUnit.SECONDS))
+                    firstStore.duplicateSettings(parent.id, "job-child")
                 },
                 executor.submit<HistoryRecord?> {
-                    start.await()
-                    store.duplicateSettings(parent.id, "job-child")
+                    check(start.await(5, TimeUnit.SECONDS))
+                    secondStore.duplicateSettings(parent.id, "job-child")
                 },
-            ).map { it.get(5, TimeUnit.SECONDS) }
+            )
+            start.countDown()
+            val results = futures.map { it.get(5, TimeUnit.SECONDS) }
 
             assertEquals(1, results.count { it != null })
-            assertNotNull(store.find("job-child"))
+            assertEquals(1, results.count { it == null })
+            val child = results.filterNotNull().single()
+            assertEquals(parent, firstStore.find(parent.id))
+            assertEquals(child, firstStore.find("job-child"))
+            assertEquals(child, secondStore.find("job-child"))
         } finally {
             executor.shutdownNow()
         }

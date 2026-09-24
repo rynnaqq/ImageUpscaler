@@ -6,12 +6,14 @@ import java.io.File
 import java.io.IOException
 import java.math.BigDecimal
 import java.math.BigInteger
+import java.nio.channels.FileChannel
 import java.nio.charset.StandardCharsets
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 
 interface HistoryStore {
     fun save(record: HistoryRecord)
@@ -23,17 +25,16 @@ interface HistoryStore {
 class FileHistoryStore(private val root: File) : HistoryStore {
     constructor(context: Context) : this(File(context.filesDir, DIRECTORY_NAME))
 
-    private val lock = Any()
+    private val lockKey = root.canonicalPath
+    private val lockFile = File(root.canonicalFile, LOCK_FILE_NAME)
 
-    override fun save(record: HistoryRecord) {
-        synchronized(lock) { writeReplacing(record) }
-    }
+    override fun save(record: HistoryRecord) = withRootLock { writeReplacingUnlocked(record) }
 
-    override fun list(): List<HistoryRecord> = synchronized(lock) { listUnlocked() }
+    override fun list(): List<HistoryRecord> = withRootLock { listUnlocked() }
 
-    override fun find(id: String): HistoryRecord? = synchronized(lock) { findUnlocked(id) }
+    override fun find(id: String): HistoryRecord? = withRootLock { findUnlocked(id) }
 
-    override fun duplicateSettings(id: String, newId: String): HistoryRecord? = synchronized(lock) {
+    override fun duplicateSettings(id: String, newId: String): HistoryRecord? = withRootLock {
         val parentId = id.takeIf(::isValidId)
         val childId = newId.takeIf(::isValidId)
         if (parentId == null || childId == null || parentId == childId) {
@@ -49,7 +50,7 @@ class FileHistoryStore(private val root: File) : HistoryStore {
                     createdAt = System.currentTimeMillis(),
                     parentId = parent.id,
                 )
-                if (writeNew(child)) child else null
+                if (writeNewUnlocked(child)) child else null
             }
         }
     }
@@ -72,9 +73,30 @@ class FileHistoryStore(private val root: File) : HistoryStore {
         return if (file.isFile) read(file, validId) else null
     }
 
-    private fun writeReplacing(record: HistoryRecord) {
+    private fun <T> withRootLock(block: () -> T): T {
+        val monitor = monitorFor(lockKey)
+        synchronized(monitor) {
+            ensureRoot()
+            val channel = FileChannel.open(
+                lockFile.toPath(),
+                StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE,
+            )
+            try {
+                val fileLock = channel.lock()
+                try {
+                    block()
+                } finally {
+                    fileLock.release()
+                }
+            } finally {
+                channel.close()
+            }
+        }
+    }
+
+    private fun writeReplacingUnlocked(record: HistoryRecord) {
         val id = validateRecord(record)
-        ensureRoot()
         val target = fileFor(id)
         val temp = Files.createTempFile(root.toPath(), ".$id-", ".tmp")
         try {
@@ -85,9 +107,8 @@ class FileHistoryStore(private val root: File) : HistoryStore {
         }
     }
 
-    private fun writeNew(record: HistoryRecord): Boolean {
+    private fun writeNewUnlocked(record: HistoryRecord): Boolean {
         val id = validateRecord(record)
-        ensureRoot()
         val target = fileFor(id).toPath()
         if (Files.exists(target)) return false
 
@@ -110,7 +131,7 @@ class FileHistoryStore(private val root: File) : HistoryStore {
     }
 
     private fun ensureRoot() {
-        if (!root.exists() && !root.mkdirs()) {
+        if (!root.isDirectory && !root.mkdirs() && !root.isDirectory) {
             throw IOException("Unable to create history directory: $root")
         }
         if (!root.isDirectory) {
@@ -229,7 +250,15 @@ class FileHistoryStore(private val root: File) : HistoryStore {
     }
 
     private companion object {
+        private val monitorMap = mutableMapOf<String, Any>()
+        private val monitorMapLock = Any()
+
+        private fun monitorFor(key: String): Any = synchronized(monitorMapLock) {
+            monitorMap.getOrPut(key) { Any() }
+        }
+
         const val DIRECTORY_NAME = "history"
+        const val LOCK_FILE_NAME = ".history.lock"
         const val FILE_EXTENSION = ".json"
         const val MAX_ID_LENGTH = 128
         val ID_PATTERN = Regex("[A-Za-z0-9][A-Za-z0-9._-]*")
