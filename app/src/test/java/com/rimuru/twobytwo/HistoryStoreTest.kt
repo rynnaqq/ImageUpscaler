@@ -10,6 +10,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class HistoryStoreTest {
 
@@ -134,20 +137,31 @@ class HistoryStoreTest {
     }
 
     @Test
-    fun `duplicate settings leaves an existing reservation untouched`() {
-        val root = Files.createTempDirectory("history-reservation").toFile()
+    fun `concurrent duplicate calls create one child`() {
+        val root = Files.createTempDirectory("history-concurrent-duplicate").toFile()
         val store = FileHistoryStore(root)
         val parent = record("job-parent", createdAt = 10L)
-        val reservation = File(root, "job-child.json")
-
         store.save(parent)
-        assertTrue(reservation.createNewFile())
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
 
-        val duplicate = store.duplicateSettings(parent.id, reservation.nameWithoutExtension)
+        try {
+            val results = listOf(
+                executor.submit<HistoryRecord?> {
+                    start.await()
+                    store.duplicateSettings(parent.id, "job-child")
+                },
+                executor.submit<HistoryRecord?> {
+                    start.await()
+                    store.duplicateSettings(parent.id, "job-child")
+                },
+            ).map { it.get(5, TimeUnit.SECONDS) }
 
-        assertNull(duplicate)
-        assertTrue(reservation.exists())
-        assertEquals(0L, reservation.length())
+            assertEquals(1, results.count { it != null })
+            assertNotNull(store.find("job-child"))
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     @Test
