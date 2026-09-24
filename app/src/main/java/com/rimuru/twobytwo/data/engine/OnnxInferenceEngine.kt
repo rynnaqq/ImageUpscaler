@@ -22,7 +22,7 @@ class OnnxInferenceEngine(
     private val manifest: ModelManifest,
 ) : InferenceEngine {
 
-    private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
+    private val env: OrtEnvironment by lazy { OrtEnvironment.getEnvironment() }
     private val sessions = mutableMapOf<InferenceEngine.ModelKey, OrtSession>()
 
     override val backendName: String
