@@ -59,4 +59,5 @@ dependencies {
     implementation(libs.coil.compose)
     implementation(libs.onnx.runtime.android)
     testImplementation(libs.junit)
+    testImplementation(libs.org.json)
 }
