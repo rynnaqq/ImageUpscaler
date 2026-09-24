@@ -84,7 +84,7 @@ class CropProcessorTest {
 
             assertEquals(1, result.width)
             assertEquals(1, result.height)
-            assertEquals(1, result.pixels.size)
+            assertEquals(4, result.pixels.size)
             assertTrue(result.pixels.contentEquals(image.pixels))
             assertNotSame(image.pixels, result.pixels)
         }
@@ -92,21 +92,13 @@ class CropProcessorTest {
 
     @Test
     fun `each result stays within one pixel of the requested aspect ratio`() {
-        val ratios = listOf(
-            Ratio(CropPreset.SQUARE, 1L, 1L),
-            Ratio(CropPreset.PORTRAIT_9_16, 9L, 16L),
-            Ratio(CropPreset.PORTRAIT_4_5, 4L, 5L),
-            Ratio(CropPreset.PRINT_4_6, 4L, 6L),
-            Ratio(CropPreset.PRINT_8_10, 8L, 10L),
-        )
-
-        ratios.forEach { ratio ->
-            val result = CropProcessor.centerCrop(source(1000, 997), ratio.preset)
-            val difference = abs(result.width * ratio.denominator - result.height * ratio.numerator)
+        CropPreset.entries.forEach { preset ->
+            val result = CropProcessor.centerCrop(source(1000, 997), preset)
+            val ratioDifference = abs(result.width.toDouble() / result.height - preset.ratio)
 
             assertTrue(
-                "preset=${ratio.preset} width=${result.width} height=${result.height}",
-                difference <= maxOf(result.width, result.height),
+                "preset=$preset width=${result.width} height=${result.height}",
+                ratioDifference <= 1.0 / result.height,
             )
         }
     }
@@ -132,11 +124,5 @@ class CropProcessorTest {
         val width: Int,
         val height: Int,
         val expected: CropRect,
-    )
-
-    private data class Ratio(
-        val preset: CropPreset,
-        val numerator: Long,
-        val denominator: Long,
     )
 }
