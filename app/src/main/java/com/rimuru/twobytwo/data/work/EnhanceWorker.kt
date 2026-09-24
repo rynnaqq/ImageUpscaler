@@ -74,6 +74,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                         KEY_BACKEND to reportedBackend,
                         KEY_BATCH_INDEX to progress.batchIndex,
                         KEY_BATCH_TOTAL to progress.batchTotal,
+                        KEY_SKIPPED_SMALL_FACES to progress.skippedSmallFaces,
                         KEY_OUTPUT_URI to progress.outputUri.orEmpty(),
                         KEY_ERROR to progress.error.orEmpty(),
                         KEY_BATCH_SUCCEEDED to progress.backendUsed?.takeLastWhile { it.isDigit() }.orEmpty(),
@@ -88,6 +89,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                     androidx.work.workDataOf(
                         KEY_OUTPUT_URI to outputUri,
                         KEY_BACKEND to lastBackend,
+                        KEY_SKIPPED_SMALL_FACES to (last?.skippedSmallFaces ?: 0),
                     ),
                 )
             } else {
@@ -163,6 +165,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         const val KEY_BACKEND = "backend"
         const val KEY_BATCH_INDEX = "batchIndex"
         const val KEY_BATCH_TOTAL = "batchTotal"
+        const val KEY_SKIPPED_SMALL_FACES = "skippedSmallFaces"
         const val KEY_OUTPUT_URI = "outputUri"
         const val KEY_ERROR = "error"
         const val KEY_BATCH_SUCCEEDED = "batchSucceeded"

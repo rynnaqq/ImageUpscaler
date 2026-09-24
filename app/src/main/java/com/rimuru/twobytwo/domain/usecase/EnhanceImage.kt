@@ -3,6 +3,9 @@ package com.rimuru.twobytwo.domain.usecase
 import com.rimuru.twobytwo.domain.engine.ColorizePass
 import com.rimuru.twobytwo.domain.engine.DeblurPass
 import com.rimuru.twobytwo.domain.engine.DenoisePass
+import com.rimuru.twobytwo.domain.engine.FaceDetector
+import com.rimuru.twobytwo.domain.engine.FaceRestorePass
+import com.rimuru.twobytwo.domain.engine.FaceRestorer
 import com.rimuru.twobytwo.domain.engine.ImageOps
 import com.rimuru.twobytwo.domain.engine.checkPassCancellation
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
@@ -37,6 +40,8 @@ class EnhanceImage(
     private val imageIo: ImageIo,
     private val tileConfig: TileConfig = TileConfig(),
     private val modelProvider: ModelProvider? = null,
+    private val faceDetector: FaceDetector? = null,
+    private val faceRestorer: FaceRestorer? = null,
 ) {
     interface ImageIo {
         fun measure(uri: String, maxMegapixels: Int): Dimensions
@@ -117,6 +122,7 @@ class EnhanceImage(
             var outputUri: String? = null
             var lastError: String? = null
             var backendUsed = engine.backendName
+            var skippedSmallFaces = 0
             val failedUris = mutableListOf<String>()
 
             for ((batchIndex, inputUri) in request.inputUris.withIndex()) {
@@ -142,6 +148,7 @@ class EnhanceImage(
                         send(progress)
                     }
                     backendUsed = processed.backendUsed
+                    skippedSmallFaces += processed.skippedSmallFaces
                     if (outputUri == null) outputUri = processed.outputUri
                     succeeded++
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -177,6 +184,7 @@ class EnhanceImage(
                     backendUsed = "$backendUsed; $succeeded ok, $failed failed",
                     outputUri = outputUri,
                     error = if (outputUri == null) lastError else null,
+                    skippedSmallFaces = skippedSmallFaces,
                 ),
             )
         }
@@ -280,7 +288,7 @@ class EnhanceImage(
         }
         checkPassCancellation(cancellationRequested)
 
-        val out = ByteArray(outputBytes)
+        var out = ByteArray(outputBytes)
         var tilesDone = 0
 
         val modelScale = InferenceEngine.scaleFor(modelKey)
@@ -322,6 +330,43 @@ class EnhanceImage(
             )
         }
 
+        var skippedSmallFaces = 0
+        if (request.faceRestoreEnabled) {
+            checkPassCancellation(cancellationRequested)
+            emit(
+                JobProgress(
+                    step = ProcessStep.DETECTING_FACES,
+                    backendUsed = backendWithPasses(engine.backendName, passStatuses),
+                    batchIndex = batchIndex,
+                    batchTotal = batchTotal,
+                ),
+            )
+            val faceResult = FaceRestorePass(
+                strength = request.faceRestoreStrength,
+                detector = faceDetector,
+                restorer = faceRestorer,
+                isCancelled = cancellationRequested,
+            ).apply(
+                RgbaImage(out, tiling.outWidth, tiling.outHeight),
+                PassContext(request.faceRestoreStrength, passProvider),
+            )
+            checkPassCancellation(cancellationRequested)
+            require(faceResult.image.width == tiling.outWidth && faceResult.image.height == tiling.outHeight)
+            require(faceResult.image.pixels.size == outputBytes)
+            out = faceResult.image.pixels
+            skippedSmallFaces = faceResult.skippedSmallFaces
+            passStatuses += "face-restore=${faceResult.detail}"
+            emit(
+                JobProgress(
+                    step = ProcessStep.RESTORING_FACES,
+                    backendUsed = backendWithPasses(engine.backendName, passStatuses),
+                    batchIndex = batchIndex,
+                    batchTotal = batchTotal,
+                    skippedSmallFaces = skippedSmallFaces,
+                ),
+            )
+        }
+
         // Stronger output: unsharp post-pass within memory-safe output size
         val outMp = tiling.outWidth.toLong() * tiling.outHeight / 1_000_000.0
         if (sharpenOutput && outMp <= sharpenMaxMegapixels) {
@@ -341,17 +386,22 @@ class EnhanceImage(
                 backendUsed = if (passStatuses.isEmpty()) null else backendWithPasses(engine.backendName, passStatuses),
                 batchIndex = batchIndex,
                 batchTotal = batchTotal,
+                skippedSmallFaces = skippedSmallFaces,
             ),
         )
         checkPassCancellation(cancellationRequested)
         val encodedUri = imageIo.encode(out, tiling.outWidth, tiling.outHeight, outputUri, format, inputUri)
-        return ProcessedImage(encodedUri, backendWithPasses(engine.backendName, passStatuses))
+        return ProcessedImage(encodedUri, backendWithPasses(engine.backendName, passStatuses), skippedSmallFaces)
     }
 
     private fun backendWithPasses(backend: String, passStatuses: List<String>): String =
         if (passStatuses.isEmpty()) backend else "$backend; ${passStatuses.joinToString("; ")}"
 
-    private data class ProcessedImage(val outputUri: String, val backendUsed: String)
+    private data class ProcessedImage(
+        val outputUri: String,
+        val backendUsed: String,
+        val skippedSmallFaces: Int,
+    )
 
     private object NoModelProvider : ModelProvider {
         override fun load(key: InferenceEngine.ModelKey) = null

@@ -149,6 +149,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                                 outputUri = outputUri,
                                 batchIndex = p.getInt(EnhanceWorker.KEY_BATCH_INDEX, 0),
                                 batchTotal = p.getInt(EnhanceWorker.KEY_BATCH_TOTAL, 1),
+                                skippedSmallFaces = p.getInt(EnhanceWorker.KEY_SKIPPED_SMALL_FACES, 0),
                             )
                             _state.update { runningState(it, progress) }
                         }
@@ -166,6 +167,10 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                             info.outputData.getString(EnhanceWorker.KEY_ERROR),
                             info.progress.getString(EnhanceWorker.KEY_ERROR),
                         )
+                        val skippedSmallFaces = info.outputData.getInt(
+                            EnhanceWorker.KEY_SKIPPED_SMALL_FACES,
+                            info.progress.getInt(EnhanceWorker.KEY_SKIPPED_SMALL_FACES, 0),
+                        )
                         if (outputUri == null) {
                             _state.update {
                                 failedState(
@@ -175,7 +180,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                                 )
                             }
                         } else {
-                            _state.update { succeededState(it, outputUri, backend) }
+                            _state.update { succeededState(it, outputUri, backend, skippedSmallFaces) }
                         }
                     }
                     WorkInfo.State.FAILED -> {
@@ -215,11 +220,21 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             backendUsed = progress.backendUsed?.takeIf { it.isNotBlank() } ?: state.backendUsed,
         )
 
-        internal fun succeededState(state: UiState, outputUri: String, backend: String?): UiState {
+        internal fun succeededState(
+            state: UiState,
+            outputUri: String,
+            backend: String?,
+            skippedSmallFaces: Int = 0,
+        ): UiState {
             val backendUsed = backend?.takeIf { it.isNotBlank() } ?: state.backendUsed
             return state.copy(
                 outputUri = outputUri,
-                progress = JobProgress(ProcessStep.DONE, backendUsed = backendUsed, outputUri = outputUri),
+                progress = JobProgress(
+                    ProcessStep.DONE,
+                    backendUsed = backendUsed,
+                    outputUri = outputUri,
+                    skippedSmallFaces = skippedSmallFaces,
+                ),
                 backendUsed = backendUsed,
             )
         }

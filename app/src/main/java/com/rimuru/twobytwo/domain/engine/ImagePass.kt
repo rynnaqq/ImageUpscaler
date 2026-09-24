@@ -16,7 +16,12 @@ data class PassContext(
     }
 }
 
-data class PassResult(val image: RgbaImage, val usedFallback: Boolean, val detail: String)
+data class PassResult(
+    val image: RgbaImage,
+    val usedFallback: Boolean,
+    val detail: String,
+    val skippedSmallFaces: Int = 0,
+)
 
 internal fun checkPassCancellation(isCancelled: () -> Boolean) {
     if (isCancelled()) throw kotlinx.coroutines.CancellationException("cancelled")

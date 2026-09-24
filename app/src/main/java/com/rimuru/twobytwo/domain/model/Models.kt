@@ -103,11 +103,12 @@ data class JobProgress(
     val error: String? = null,
     val batchIndex: Int = 0,
     val batchTotal: Int = 1,
+    val skippedSmallFaces: Int = 0,
 ) {
     val overall: Float
         get() = when (step) {
             ProcessStep.PREPARING -> 0.02f
-            ProcessStep.DETECTING_FACES -> 0.05f
+            ProcessStep.DETECTING_FACES -> 0.91f
             ProcessStep.PROCESSING_TILES -> 0.05f + 0.85f * (tilesDone.toFloat() / tilesTotal.coerceAtLeast(1))
             ProcessStep.RESTORING_FACES -> 0.93f
             ProcessStep.BLENDING -> 0.97f
