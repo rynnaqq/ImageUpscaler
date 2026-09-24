@@ -72,6 +72,66 @@ class ScratchColorPassTest {
     }
 
     @Test
+    fun `scratch repair handles a one by one image without neighbors`() {
+        val image = solidImage(1, 1, 100, 110, 120, 200)
+
+        val result = ScratchRepairPass(100).apply(image, PassContext(100, missingModels))
+
+        assertTrue(result.usedFallback)
+        assertEquals(image.width, result.image.width)
+        assertEquals(image.height, result.image.height)
+        assertTrue(image.pixels.contentEquals(result.image.pixels))
+    }
+
+    @Test
+    fun `scratch repair handles single row and single column defects`() {
+        val row = solidImage(5, 1, 80, 90, 100, 180)
+        setPixel(row, 2, 245, 245, 245)
+        val rowResult = ScratchRepairPass(100).apply(row, PassContext(100, missingModels))
+
+        assertNotEquals(row.pixels[8], rowResult.image.pixels[8])
+        for (pixel in 0 until 5) {
+            if (pixel != 2) {
+                assertEquals(row.pixels[pixel * 4], rowResult.image.pixels[pixel * 4])
+                assertEquals(row.pixels[pixel * 4 + 3], rowResult.image.pixels[pixel * 4 + 3])
+            }
+        }
+
+        val column = solidImage(1, 5, 80, 90, 100, 180)
+        setPixel(column, 2, 245, 245, 245)
+        val columnResult = ScratchRepairPass(100).apply(column, PassContext(100, missingModels))
+
+        assertNotEquals(column.pixels[8], columnResult.image.pixels[8])
+        for (pixel in 0 until 5) {
+            if (pixel != 2) {
+                assertEquals(column.pixels[pixel * 4], columnResult.image.pixels[pixel * 4])
+                assertEquals(column.pixels[pixel * 4 + 3], columnResult.image.pixels[pixel * 4 + 3])
+            }
+        }
+    }
+
+    @Test
+    fun `scratch repair handles corner defects without changing the interior`() {
+        val image = solidImage(3, 3, 80, 90, 100, 180)
+        val corners = intArrayOf(0, 2, 6, 8)
+        corners.forEach { setPixel(image, it, 245, 245, 245) }
+
+        val result = ScratchRepairPass(100).apply(image, PassContext(100, missingModels))
+
+        corners.forEach { pixel ->
+            assertNotEquals(image.pixels[pixel * 4], result.image.pixels[pixel * 4])
+        }
+        for (pixel in 0 until 9) {
+            assertEquals(image.pixels[pixel * 4 + 3], result.image.pixels[pixel * 4 + 3])
+            if (pixel !in corners) {
+                assertEquals(image.pixels[pixel * 4], result.image.pixels[pixel * 4])
+                assertEquals(image.pixels[pixel * 4 + 1], result.image.pixels[pixel * 4 + 1])
+                assertEquals(image.pixels[pixel * 4 + 2], result.image.pixels[pixel * 4 + 2])
+            }
+        }
+    }
+
+    @Test
     fun `colorization preserves dimensions alpha and luminance`() {
         val image = RgbaImage(
             byteArrayOf(
@@ -93,8 +153,25 @@ class ScratchColorPassTest {
             val index = pixel * 4
             assertEquals(image.pixels[index + 3], result.image.pixels[index + 3])
             assertTrue(abs(luminance(result.image.pixels, index) - luminance(image.pixels, index)) <= 2)
+            assertTrue(
+                result.image.pixels[index] != result.image.pixels[index + 1] ||
+                    result.image.pixels[index + 1] != result.image.pixels[index + 2],
+            )
         }
-        assertNotEquals(result.image.pixels[4], result.image.pixels[5])
+    }
+
+    @Test
+    fun `colorization remains visible at moderate strength without changing alpha`() {
+        val image = solidImage(1, 1, 128, 128, 128, 173)
+
+        val result = ColorizePass(25).apply(image, PassContext(25, missingModels))
+
+        assertTrue(
+            result.image.pixels[0] != result.image.pixels[1] ||
+                result.image.pixels[1] != result.image.pixels[2],
+        )
+        assertEquals(image.pixels[3], result.image.pixels[3])
+        assertTrue(abs(luminance(result.image.pixels, 0) - luminance(image.pixels, 0)) <= 2)
     }
 
     @Test
@@ -252,6 +329,13 @@ class ScratchColorPassTest {
             index += 4
         }
         return RgbaImage(pixels, width, height)
+    }
+
+    private fun setPixel(image: RgbaImage, pixel: Int, red: Int, green: Int, blue: Int) {
+        val index = pixel * 4
+        image.pixels[index] = red.toByte()
+        image.pixels[index + 1] = green.toByte()
+        image.pixels[index + 2] = blue.toByte()
     }
 
     private fun luminance(pixels: ByteArray, index: Int): Int {

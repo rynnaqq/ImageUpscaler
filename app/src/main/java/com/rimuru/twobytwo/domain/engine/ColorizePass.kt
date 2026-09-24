@@ -7,6 +7,9 @@ class ColorizePass(
     private val isCancelled: () -> Boolean = { false },
 ) : ImagePass {
     private val configuredStrength = strength.coerceIn(0, 100)
+    private val redChroma = 0.05f * 255f
+    private val greenChroma = -0.01f * 255f
+    private val blueChroma = -0.045789474f * 255f
 
     override val id = "colorize"
 
@@ -28,11 +31,11 @@ class ColorizePass(
                 val index = (y * image.width + x) * 4
                 val luminance = luminance(image.pixels, index)
                 val scale = chromaScale(luminance, amount)
-                output[index] = (luminance + 0.05f * amount * scale)
+                output[index] = (luminance + redChroma * amount * scale)
                     .roundToInt().coerceIn(0, 255).toByte()
-                output[index + 1] = (luminance - 0.01f * amount * scale)
+                output[index + 1] = (luminance + greenChroma * amount * scale)
                     .roundToInt().coerceIn(0, 255).toByte()
-                output[index + 2] = (luminance - 0.045789474f * amount * scale)
+                output[index + 2] = (luminance + blueChroma * amount * scale)
                     .roundToInt().coerceIn(0, 255).toByte()
             }
         }
@@ -52,9 +55,9 @@ class ColorizePass(
     }
 
     private fun chromaScale(luminance: Float, amount: Float): Float {
-        val redDelta = 0.05f * amount
-        val greenDelta = -0.01f * amount
-        val blueDelta = -0.045789474f * amount
+        val redDelta = redChroma * amount
+        val greenDelta = greenChroma * amount
+        val blueDelta = blueChroma * amount
         var scale = 1f
         scale = limitScale(luminance, redDelta, scale)
         scale = limitScale(luminance, greenDelta, scale)
