@@ -38,6 +38,17 @@ class EnhanceViewModelStateTest {
     }
 
     @Test
+    fun `starting a new job clears a previous error`() {
+        val updated = EnhanceViewModel.beginJobState(
+            EnhanceViewModel.UiState(error = "old failure"),
+            listOf("content://input/photo"),
+        )
+
+        assertNull(updated.error)
+        assertEquals(1, updated.batchItems.size)
+    }
+
+    @Test
     fun `success keeps terminal backend in state and done progress`() {
         val updated = EnhanceViewModel.succeededState(
             EnhanceViewModel.UiState(),

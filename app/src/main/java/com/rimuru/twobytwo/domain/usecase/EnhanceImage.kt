@@ -152,6 +152,17 @@ class EnhanceImage(
                     }
                     backendUsed = processed.backendUsed
                     skippedSmallFaces += processed.skippedSmallFaces
+                    send(
+                        JobProgress(
+                            step = ProcessStep.BLENDING,
+                            backendUsed = processed.backendUsed,
+                            outputUri = processed.outputUri,
+                            batchIndex = batchIndex,
+                            batchTotal = total,
+                            skippedSmallFaces = processed.skippedSmallFaces,
+                            itemCompleted = true,
+                        ),
+                    )
                     if (outputUri == null) outputUri = processed.outputUri
                     succeeded++
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -174,6 +185,7 @@ class EnhanceImage(
                             batchTotal = total,
                             backendUsed = "error: ${message.take(80)}",
                             error = message,
+                            itemCompleted = true,
                             overallOverride = lastOverall,
                         ),
                     )

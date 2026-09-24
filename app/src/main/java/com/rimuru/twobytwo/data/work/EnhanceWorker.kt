@@ -7,6 +7,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
+import androidx.work.Data
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.rimuru.twobytwo.R
@@ -62,8 +63,12 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             )
 
             var last: JobProgress? = null
+            val outcomes = CharArray(request.inputUris.size) { OUTCOME_QUEUED }
             flow.collect { progress ->
                 last = progress
+                if (progress.itemCompleted && progress.batchIndex in outcomes.indices) {
+                    outcomes[progress.batchIndex] = if (progress.error == null) OUTCOME_SUCCESS else OUTCOME_FAILURE
+                }
                 val reportedBackend = progress.backendUsed?.takeIf { it.isNotBlank() } ?: lastBackend
                 lastBackend = reportedBackend
                 setProgress(
@@ -78,7 +83,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                         KEY_OVERALL_OVERRIDE to progress.overallOverride?.toString().orEmpty(),
                         KEY_OUTPUT_URI to progress.outputUri.orEmpty(),
                         KEY_ERROR to progress.error.orEmpty(),
-                        KEY_BATCH_SUCCEEDED to progress.backendUsed?.takeLastWhile { it.isDigit() }.orEmpty(),
+                        KEY_BATCH_OUTCOMES to String(outcomes),
                     ),
                 )
                 setForeground(createForegroundInfo(stepText(progress)))
@@ -93,6 +98,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                         KEY_SKIPPED_SMALL_FACES to (last?.skippedSmallFaces ?: 0),
                         KEY_BATCH_INDEX to (last?.batchIndex ?: 0),
                         KEY_BATCH_TOTAL to (last?.batchTotal ?: 1),
+                        KEY_BATCH_OUTCOMES to String(outcomes),
                     ),
                 )
             } else {
@@ -101,6 +107,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                     last?.backendUsed ?: lastBackend,
                     last?.batchIndex,
                     last?.batchTotal,
+                    String(outcomes),
                 )
             }
         } catch (e: CancellationException) {
@@ -119,6 +126,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         backend: String? = null,
         batchIndex: Int? = null,
         batchTotal: Int? = null,
+        outcomes: String? = null,
     ): Result {
         val data = Data.Builder()
             .putString(
@@ -129,6 +137,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             .putString(KEY_BACKEND, backend.orEmpty())
         batchIndex?.let { data.putInt(KEY_BATCH_INDEX, it) }
         batchTotal?.let { data.putInt(KEY_BATCH_TOTAL, it) }
+        outcomes?.let { data.putString(KEY_BATCH_OUTCOMES, it) }
         return Result.failure(data.build())
     }
 
@@ -181,11 +190,15 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         const val KEY_BACKEND = "backend"
         const val KEY_BATCH_INDEX = "batchIndex"
         const val KEY_BATCH_TOTAL = "batchTotal"
+        const val KEY_BATCH_OUTCOMES = "batchOutcomes"
+        const val OUTCOME_QUEUED = 'Q'
+        const val OUTCOME_SUCCESS = 'S'
+        const val OUTCOME_FAILURE = 'F'
+        const val OUTCOME_CANCELLED = 'C'
         const val KEY_SKIPPED_SMALL_FACES = "skippedSmallFaces"
         const val KEY_OVERALL_OVERRIDE = "overallOverride"
         const val KEY_OUTPUT_URI = "outputUri"
         const val KEY_ERROR = "error"
-        const val KEY_BATCH_SUCCEEDED = "batchSucceeded"
         const val CHANNEL_ID = "enhance_jobs"
         const val NOTIFICATION_ID = 42
     }

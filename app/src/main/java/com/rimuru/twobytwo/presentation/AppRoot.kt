@@ -551,7 +551,7 @@ fun ProcessingScreen(
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             Text(
-                                text = item.status.name,
+                                text = stringResource(batchStatusString(item.status)),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = when (item.status) {
                                     BatchItemStatus.QUEUED, BatchItemStatus.CANCELLED ->
@@ -588,6 +588,14 @@ fun ProcessingScreen(
             },
         )
     }
+}
+
+private fun batchStatusString(status: BatchItemStatus): Int = when (status) {
+    BatchItemStatus.QUEUED -> R.string.batch_status_queued
+    BatchItemStatus.PROCESSING -> R.string.batch_status_processing
+    BatchItemStatus.SUCCEEDED -> R.string.batch_status_succeeded
+    BatchItemStatus.FAILED -> R.string.batch_status_failed
+    BatchItemStatus.CANCELLED -> R.string.batch_status_cancelled
 }
 
 @Composable

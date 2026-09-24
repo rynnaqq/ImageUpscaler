@@ -63,6 +63,18 @@ class BatchQueueTest {
     }
 
     @Test
+    fun `terminal outcome vector restores a skipped failure`() {
+        val items = EnhanceViewModel.initialBatchItems(
+            listOf("content://input/first", "content://input/second"),
+        )
+
+        val updated = EnhanceViewModel.applyBatchOutcomes(items, "FS")
+
+        assertEquals(BatchItemStatus.FAILED, updated[0].status)
+        assertEquals(BatchItemStatus.SUCCEEDED, updated[1].status)
+    }
+
+    @Test
     fun `failed item N does not prevent item N plus one`() = runBlocking {
         val decodedUris = mutableListOf<String>()
         val imageIo = object : EnhanceImage.ImageIo {
@@ -100,6 +112,8 @@ class BatchQueueTest {
             listOf("content://input/first", "content://input/second"),
             decodedUris,
         )
+        assertTrue(progress.any { it.batchIndex == 0 && it.itemCompleted && it.error == "first image failed" })
+        assertTrue(progress.any { it.batchIndex == 1 && it.itemCompleted && it.error == null })
         val failure = progress.single { it.error == "first image failed" }
         assertEquals(0, failure.batchIndex)
         assertNull(failure.outputUri)
@@ -162,7 +176,8 @@ class BatchQueueTest {
         assertEquals(1, decodeCount)
         assertEquals(1, encodeCount)
         assertTrue(emitted.none { it.step == ProcessStep.DONE })
-        assertTrue(emitted.none { it.outputUri != null })
+        assertTrue(emitted.none { it.step == ProcessStep.DONE && it.outputUri != null })
+        assertTrue(emitted.any { it.itemCompleted && it.outputUri != null })
     }
 
     private fun testEngine(): InferenceEngine = object : InferenceEngine {

@@ -4,7 +4,7 @@
     <!-- S1 Home -->
     <string name="home_title">Rimuru 2x</string>
     <string name="home_pick_photo">Pick photos</string>
-    <string name="home_batch_hint">Select up to 20 photos — they\'ll be enhanced one by one with the same settings</string>
+    <string name="home_batch_hint">Select up to 50 photos — they\'ll be enhanced one by one with the same settings</string>
     <string name="home_drop_hint">Pick or share a photo to enhance — everything stays on your device</string>
     <string name="home_recent_jobs">Recent jobs</string>
     <string name="home_privacy_note">All processing happens on your device. Always.</string>
@@ -12,6 +12,11 @@
     <!-- Batch -->
     <string name="config_batch_title">Enhancing %1$d photos</string>
     <string name="proc_batch_counter">Photo %1$d of %2$d</string>
+    <string name="batch_status_queued">Queued</string>
+    <string name="batch_status_processing">Processing</string>
+    <string name="batch_status_succeeded">Succeeded</string>
+    <string name="batch_status_failed">Failed</string>
+    <string name="batch_status_cancelled">Cancelled</string>
 
     <!-- S2 Config -->
     <string name="config_scale">Scale</string>

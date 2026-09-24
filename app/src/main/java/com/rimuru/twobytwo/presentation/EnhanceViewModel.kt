@@ -143,13 +143,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         val wm = WorkManager.getInstance(getApplication())
         wm.enqueueUniqueWork("enhance", ExistingWorkPolicy.REPLACE, work)
         _state.update {
-            it.copy(
-                jobId = work.id,
-                outputUri = null,
-                progress = initialProgress(s.pickedUris.size),
-                batchItems = initialBatchItems(s.pickedUris),
-                backendUsed = null,
-            )
+            beginJobState(it, s.pickedUris).copy(jobId = work.id)
         }
 
         observeProgress(work.id)
@@ -164,6 +158,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                         val p = info.progress
                         val step = p.getString(EnhanceWorker.KEY_STEP)?.let { runCatching { ProcessStep.valueOf(it) }.getOrNull() }
                         val outputUri = p.getString(EnhanceWorker.KEY_OUTPUT_URI)?.takeIf { it.isNotBlank() }
+                        val batchOutcomes = p.getString(EnhanceWorker.KEY_BATCH_OUTCOMES)
                         if (step != null && (step != ProcessStep.DONE || !outputUri.isNullOrBlank())) {
                             val progress = JobProgress(
                                 step = step,
@@ -177,7 +172,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                                 error = p.getString(EnhanceWorker.KEY_ERROR)?.takeIf { it.isNotBlank() },
                                 overallOverride = p.getString(EnhanceWorker.KEY_OVERALL_OVERRIDE)?.toFloatOrNull(),
                             )
-                            _state.update { runningState(it, progress) }
+                            _state.update { runningState(it, progress, batchOutcomes) }
                         }
                     }
                     WorkInfo.State.SUCCEEDED -> {
@@ -193,6 +188,10 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                             info.outputData.getString(EnhanceWorker.KEY_ERROR),
                             info.progress.getString(EnhanceWorker.KEY_ERROR),
                         )
+                        val batchOutcomes = firstNonBlank(
+                            info.outputData.getString(EnhanceWorker.KEY_BATCH_OUTCOMES),
+                            info.progress.getString(EnhanceWorker.KEY_BATCH_OUTCOMES),
+                        )
                         val skippedSmallFaces = info.outputData.getInt(
                             EnhanceWorker.KEY_SKIPPED_SMALL_FACES,
                             info.progress.getInt(EnhanceWorker.KEY_SKIPPED_SMALL_FACES, 0),
@@ -200,13 +199,15 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                         if (outputUri == null) {
                             _state.update {
                                 failedState(
-                                    it,
+                                    withBatchOutcomes(it, batchOutcomes),
                                     error ?: getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed),
                                     backend,
                                 )
                             }
                         } else {
-                            _state.update { succeededState(it, outputUri, backend, skippedSmallFaces) }
+                            _state.update {
+                                succeededState(withBatchOutcomes(it, batchOutcomes), outputUri, backend, skippedSmallFaces)
+                            }
                         }
                     }
                     WorkInfo.State.FAILED -> {
@@ -218,15 +219,22 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                             info.outputData.getString(EnhanceWorker.KEY_BACKEND),
                             info.progress.getString(EnhanceWorker.KEY_BACKEND),
                         )
+                        val batchOutcomes = firstNonBlank(
+                            info.outputData.getString(EnhanceWorker.KEY_BATCH_OUTCOMES),
+                            info.progress.getString(EnhanceWorker.KEY_BATCH_OUTCOMES),
+                        )
                         _state.update {
                             failedState(
-                                it,
+                                withBatchOutcomes(it, batchOutcomes),
                                 error ?: getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed),
                                 backend,
                             )
                         }
                     }
-                    WorkInfo.State.CANCELLED -> _state.update { cancelledState(it) }
+                    WorkInfo.State.CANCELLED -> {
+                        val batchOutcomes = info.progress.getString(EnhanceWorker.KEY_BATCH_OUTCOMES)
+                        _state.update { cancelledState(it, batchOutcomes) }
+                    }
                     else -> {}
                 }
             }
@@ -250,6 +258,34 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
 
         internal fun initialBatchItems(uris: List<String>): List<BatchItemState> =
             uris.map { BatchItemState(it) }
+
+        internal fun beginJobState(state: UiState, uris: List<String>): UiState = state.copy(
+            outputUri = null,
+            progress = initialProgress(uris.size),
+            batchItems = initialBatchItems(uris),
+            backendUsed = null,
+            error = null,
+        )
+
+        internal fun applyBatchOutcomes(
+            items: List<BatchItemState>,
+            encoded: String?,
+        ): List<BatchItemState> {
+            if (encoded.isNullOrEmpty()) return items
+            return items.mapIndexed { index, item ->
+                when (encoded.getOrNull(index)) {
+                    EnhanceWorker.OUTCOME_SUCCESS -> item.copy(status = BatchItemStatus.SUCCEEDED)
+                    EnhanceWorker.OUTCOME_FAILURE -> item.copy(status = BatchItemStatus.FAILED)
+                    EnhanceWorker.OUTCOME_CANCELLED -> item.copy(status = BatchItemStatus.CANCELLED)
+                    else -> item
+                }
+            }
+        }
+
+        internal fun withBatchOutcomes(state: UiState, encoded: String?): UiState {
+            val items = state.batchItems.ifEmpty { initialBatchItems(state.pickedUris) }
+            return state.copy(batchItems = applyBatchOutcomes(items, encoded))
+        }
 
         internal fun updateBatchItems(
             items: List<BatchItemState>,
@@ -276,23 +312,31 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
-        internal fun runningState(state: UiState, progress: JobProgress): UiState {
-            val items = state.batchItems.ifEmpty { initialBatchItems(state.pickedUris) }
-            return state.copy(
+        internal fun runningState(
+            state: UiState,
+            progress: JobProgress,
+            encodedOutcomes: String? = null,
+        ): UiState {
+            val withOutcomes = withBatchOutcomes(state, encodedOutcomes)
+            val items = withOutcomes.batchItems
+            return withOutcomes.copy(
                 progress = progress,
                 batchItems = updateBatchItems(items, progress),
-                backendUsed = progress.backendUsed?.takeIf { it.isNotBlank() } ?: state.backendUsed,
+                backendUsed = progress.backendUsed?.takeIf { it.isNotBlank() } ?: withOutcomes.backendUsed,
             )
         }
 
-        internal fun cancelledState(state: UiState): UiState {
-            val items = state.batchItems.ifEmpty { initialBatchItems(state.pickedUris) }
+        internal fun cancelledState(state: UiState, encodedOutcomes: String? = null): UiState {
+            val withOutcomes = withBatchOutcomes(state, encodedOutcomes)
+            val items = withOutcomes.batchItems
             val index = state.progress?.batchIndex?.coerceIn(0, items.lastIndex.coerceAtLeast(0)) ?: 0
-            return state.copy(
+            return withOutcomes.copy(
                 progress = null,
                 batchItems = items.mapIndexed { itemIndex, item ->
                     when {
-                        item.status == BatchItemStatus.FAILED -> item
+                        item.status == BatchItemStatus.FAILED ||
+                            item.status == BatchItemStatus.CANCELLED ||
+                            item.status == BatchItemStatus.SUCCEEDED -> item
                         itemIndex < index -> item.copy(status = BatchItemStatus.SUCCEEDED)
                         else -> item.copy(status = BatchItemStatus.CANCELLED)
                     }
@@ -307,23 +351,27 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             skippedSmallFaces: Int = 0,
         ): UiState {
             val backendUsed = backend?.takeIf { it.isNotBlank() } ?: state.backendUsed
+            val items = state.batchItems.ifEmpty { initialBatchItems(state.pickedUris) }
+            val previousProgress = state.progress
             return state.copy(
                 outputUri = outputUri,
                 progress = JobProgress(
                     ProcessStep.DONE,
                     backendUsed = backendUsed,
                     outputUri = outputUri,
+                    batchIndex = previousProgress?.batchIndex ?: (items.lastIndex.coerceAtLeast(0)),
+                    batchTotal = previousProgress?.batchTotal ?: items.size.coerceAtLeast(1),
                     skippedSmallFaces = skippedSmallFaces,
                 ),
-                batchItems = state.batchItems.ifEmpty { initialBatchItems(state.pickedUris) }
-                    .map {
-                        if (it.status == BatchItemStatus.FAILED || it.status == BatchItemStatus.CANCELLED) {
-                            it
-                        } else {
-                            it.copy(status = BatchItemStatus.SUCCEEDED)
-                        }
-                    },
+                batchItems = items.map {
+                    if (it.status == BatchItemStatus.FAILED || it.status == BatchItemStatus.CANCELLED) {
+                        it
+                    } else {
+                        it.copy(status = BatchItemStatus.SUCCEEDED)
+                    }
+                },
                 backendUsed = backendUsed,
+                error = null,
             )
         }
 

@@ -111,6 +111,7 @@ data class JobProgress(
     val batchIndex: Int = 0,
     val batchTotal: Int = 1,
     val skippedSmallFaces: Int = 0,
+    val itemCompleted: Boolean = false,
     val overallOverride: Float? = null,
 ) {
     val overall: Float
