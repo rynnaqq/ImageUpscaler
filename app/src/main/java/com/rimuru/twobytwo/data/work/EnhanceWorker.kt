@@ -92,8 +92,10 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
 
     private fun failure(message: String?): Result = Result.failure(
         androidx.work.workDataOf(
-            KEY_ERROR to message?.takeIf { it.isNotBlank() }?.take(200)
-                ?: applicationContext.getString(R.string.error_job_failed),
+            KEY_ERROR to (
+                message?.takeIf { it.isNotBlank() }?.take(200)
+                    ?: applicationContext.getString(R.string.error_job_failed)
+                ),
         ),
     )
 
