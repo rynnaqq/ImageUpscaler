@@ -39,6 +39,15 @@ data class DenoiseStrength(val percent: Int) {
     }
 }
 
+data class PassRequest(
+    val id: String,
+    val strength: Int,
+) {
+    init {
+        require(strength in 0..100) { "pass strength must be 0..100, got $strength" }
+    }
+}
+
 /** Full enhancement request — everything S2 collects. Batch-capable. */
 data class EnhanceRequest(
     val inputUris: List<String>,
@@ -52,7 +61,14 @@ data class EnhanceRequest(
     val useNeuralEngine: Boolean = true,
     /** Unsharp-mask post-pass for extra punch (skipped over MP ceiling for memory safety). */
     val sharpen: Boolean = true,
-)
+    val passes: List<PassRequest> = emptyList(),
+) {
+    init {
+        require(faceRestoreStrength in 0..100) {
+            "face restore strength must be 0..100, got $faceRestoreStrength"
+        }
+    }
+}
 
 enum class ProcessStep {
     PREPARING,
