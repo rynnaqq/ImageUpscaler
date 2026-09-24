@@ -17,7 +17,7 @@ class EnhancePreflightTest {
         var decodeCalled = false
         var encodeCalled = false
         val imageIo = object : EnhanceImage.ImageIo {
-            override fun measure(uri: String, maxMegapixels: Int) = EnhanceImage.Dimensions(5_000, 5_000)
+            override fun measure(uri: String, maxMegapixels: Int) = EnhanceImage.Dimensions(20_000, 20_000)
 
             override fun decode(uri: String, maxMegapixels: Int): EnhanceImage.DecodedImage {
                 decodeCalled = true
