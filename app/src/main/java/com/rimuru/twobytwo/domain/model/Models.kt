@@ -106,13 +106,18 @@ data class JobProgress(
     val skippedSmallFaces: Int = 0,
 ) {
     val overall: Float
-        get() = when (step) {
-            ProcessStep.PREPARING -> 0.02f
-            ProcessStep.DETECTING_FACES -> 0.91f
-            ProcessStep.PROCESSING_TILES -> 0.05f + 0.85f * (tilesDone.toFloat() / tilesTotal.coerceAtLeast(1))
-            ProcessStep.RESTORING_FACES -> 0.93f
-            ProcessStep.BLENDING -> 0.97f
-            ProcessStep.DONE -> 1f
+        get() {
+            if (step == ProcessStep.DONE) return 1f
+            val total = batchTotal.coerceAtLeast(1)
+            val itemProgress = when (step) {
+                ProcessStep.PREPARING -> 0.02f
+                ProcessStep.DETECTING_FACES -> 0.91f
+                ProcessStep.PROCESSING_TILES -> 0.05f + 0.85f * (tilesDone.toFloat() / tilesTotal.coerceAtLeast(1))
+                ProcessStep.RESTORING_FACES -> 0.93f
+                ProcessStep.BLENDING -> 0.97f
+                ProcessStep.DONE -> 1f
+            }
+            return (batchIndex.toFloat() + itemProgress) / total
         }
 }
 

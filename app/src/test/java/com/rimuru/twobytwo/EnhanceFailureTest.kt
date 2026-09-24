@@ -61,6 +61,38 @@ class EnhanceFailureTest {
     }
 
     @Test
+    fun `overall progress never decreases across a two image batch`() = runBlocking {
+        val imageIo = object : EnhanceImage.ImageIo {
+            override fun measure(uri: String, maxMegapixels: Int) = EnhanceImage.Dimensions(1, 1)
+
+            override fun decode(uri: String, maxMegapixels: Int) =
+                EnhanceImage.DecodedImage(ByteArray(4), 1, 1)
+
+            override fun encode(
+                rgba: ByteArray,
+                width: Int,
+                height: Int,
+                destinationUri: String,
+                format: EnhanceImage.OutputFormat,
+                exifSourceUri: String?,
+            ): String = "content://output/$destinationUri"
+        }
+
+        val progress = EnhanceImage(testEngine(), imageIo).run(
+            request = EnhanceRequest(
+                inputUris = listOf("content://input/first", "content://input/second"),
+                faceRestoreEnabled = true,
+                sharpen = false,
+            ),
+            outputNameFor = { index, _ -> "output-$index.png" },
+        ).toList()
+
+        val overall = progress.map { it.overall }
+        assertTrue(overall.zipWithNext().all { (before, after) -> after >= before })
+        assertEquals(1f, progress.last().overall, 0f)
+    }
+
+    @Test
     fun `cancellation from inference terminates flow without done output`() {
         val emitted = mutableListOf<JobProgress>()
         var inferenceCalls = 0
