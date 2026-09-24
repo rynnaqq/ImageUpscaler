@@ -44,7 +44,9 @@ object DeviceTiers {
         return major > 1 || (major == 1 && minor >= 1)
     }
 
-    private fun vulkanVersion(pm: PackageManager): Int = runCatching {
-        pm.getSystemFeatureVersion("android.hardware.vulkan.version")
-    }.getOrDefault(0)
+    private fun vulkanVersion(pm: PackageManager): Int =
+        pm.systemAvailableFeatures
+            .firstOrNull { it.name == "android.hardware.vulkan.version" }
+            ?.version
+            ?: 0
 }
