@@ -135,6 +135,8 @@ class EnhanceImage(
                     succeeded++
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
+                } catch (e: OutOfMemoryError) {
+                    throw e
                 } catch (t: Throwable) {
                     // Per-image isolation: log-and-continue, batch survives (batch stability)
                     val message = t.message?.takeIf { it.isNotBlank() }

@@ -1,5 +1,6 @@
 package com.rimuru.twobytwo
 
+import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -14,32 +15,44 @@ class EnhanceMemoryBudgetTest {
 
     @Test
     fun `twelve megapixel two x output stays within technical boundary`() {
+        val sourceWidth = 12_000L
+        val sourceHeight = 1_000L
+        val scale = ScaleFactor.X2.multiplier
         assertEquals(
             192_000_000,
-            EnhanceImage.outputBufferSize(24_000, 2_000, Double.MAX_VALUE),
+            EnhanceImage.outputBufferSize(sourceWidth * scale, sourceHeight * scale, Double.MAX_VALUE),
         )
     }
 
     @Test
     fun `twelve megapixel four x output stays within technical boundary`() {
+        val sourceWidth = 12_000L
+        val sourceHeight = 1_000L
+        val scale = ScaleFactor.X4.multiplier
         assertEquals(
             768_000_000,
-            EnhanceImage.outputBufferSize(48_000, 4_000, Double.MAX_VALUE),
+            EnhanceImage.outputBufferSize(sourceWidth * scale, sourceHeight * scale, Double.MAX_VALUE),
         )
     }
 
     @Test
-    fun `eight x output stays within technical buffer boundary`() {
+    fun `six megapixel eight x output stays within technical boundary`() {
+        val sourceWidth = 6_000L
+        val sourceHeight = 1_000L
+        val scale = ScaleFactor.X8.multiplier
         assertEquals(
             1_536_000_000,
-            EnhanceImage.outputBufferSize(48_000, 8_000, Double.MAX_VALUE),
+            EnhanceImage.outputBufferSize(sourceWidth * scale, sourceHeight * scale, Double.MAX_VALUE),
         )
     }
 
     @Test
-    fun `output buffer rejects pixels over JVM array limit`() {
+    fun `twelve megapixel eight x output exceeds technical boundary`() {
+        val sourceWidth = 12_000L
+        val sourceHeight = 1_000L
+        val scale = ScaleFactor.X8.multiplier
         val error = runCatching {
-            EnhanceImage.outputBufferSize(1, Int.MAX_VALUE.toLong() / 4L + 1L, Double.MAX_VALUE)
+            EnhanceImage.outputBufferSize(sourceWidth * scale, sourceHeight * scale, Double.MAX_VALUE)
         }.exceptionOrNull()
 
         assertTrue(error is IllegalArgumentException)

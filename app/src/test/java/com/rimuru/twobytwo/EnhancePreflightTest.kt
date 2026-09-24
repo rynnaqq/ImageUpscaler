@@ -7,6 +7,7 @@ import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -103,5 +104,53 @@ class EnhancePreflightTest {
 
         assertTrue(decodeCalled)
         assertTrue(progress.last().error == "decode reached")
+    }
+
+    @Test
+    fun `out of memory terminates batch before next image`() = runBlocking {
+        var decodeCount = 0
+        val imageIo = object : EnhanceImage.ImageIo {
+            override fun measure(uri: String, maxMegapixels: Int) = EnhanceImage.Dimensions(1, 1)
+
+            override fun decode(uri: String, maxMegapixels: Int): EnhanceImage.DecodedImage {
+                decodeCount++
+                throw OutOfMemoryError("simulated allocation failure")
+            }
+
+            override fun encode(
+                rgba: ByteArray,
+                width: Int,
+                height: Int,
+                destinationUri: String,
+                format: EnhanceImage.OutputFormat,
+                exifSourceUri: String?,
+            ): String = error("encode should not run")
+        }
+        val engine = object : InferenceEngine {
+            override val backendName = "test"
+            override fun isAvailable(accelerator: Accelerator) = true
+            override fun close() = Unit
+            override fun upscaleTile(
+                input: FloatArray,
+                tileWidth: Int,
+                tileHeight: Int,
+                modelKey: InferenceEngine.ModelKey,
+            ): FloatArray = error("inference should not run")
+        }
+
+        val error = runCatching {
+            EnhanceImage(engine, imageIo).run(
+                request = EnhanceRequest(
+                    inputUris = listOf(
+                        "content://input/first",
+                        "content://input/second",
+                    ),
+                ),
+                outputNameFor = { index, _ -> "output-$index.png" },
+            ).toList()
+        }.exceptionOrNull()
+
+        assertTrue(error is OutOfMemoryError)
+        assertEquals(1, decodeCount)
     }
 }
