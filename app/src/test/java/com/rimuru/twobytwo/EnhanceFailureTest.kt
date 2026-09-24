@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -106,6 +107,66 @@ class EnhanceFailureTest {
         }
 
         assertTrue(error is CancellationException)
+        assertEquals(1, inferenceCalls)
+        assertTrue(emitted.none { it.step == ProcessStep.DONE })
+        assertTrue(emitted.none { it.outputUri != null })
+    }
+
+    @Test
+    fun `out of memory from inference escapes without done output`() {
+        val expected = OutOfMemoryError("simulated inference allocation failure")
+        val emitted = mutableListOf<JobProgress>()
+        var decodeCount = 0
+        var inferenceCalls = 0
+        val imageIo = object : EnhanceImage.ImageIo {
+            override fun measure(uri: String, maxMegapixels: Int) = EnhanceImage.Dimensions(1, 1)
+
+            override fun decode(uri: String, maxMegapixels: Int): EnhanceImage.DecodedImage {
+                decodeCount++
+                return EnhanceImage.DecodedImage(ByteArray(4), 1, 1)
+            }
+
+            override fun encode(
+                rgba: ByteArray,
+                width: Int,
+                height: Int,
+                destinationUri: String,
+                format: EnhanceImage.OutputFormat,
+                exifSourceUri: String?,
+            ): String = error("encode should not run")
+        }
+        val engine = object : InferenceEngine {
+            override val backendName = "test"
+            override fun isAvailable(accelerator: Accelerator) = true
+            override fun close() = Unit
+
+            override fun upscaleTile(
+                input: FloatArray,
+                tileWidth: Int,
+                tileHeight: Int,
+                modelKey: InferenceEngine.ModelKey,
+            ): FloatArray {
+                inferenceCalls++
+                throw expected
+            }
+        }
+
+        val error = try {
+            runBlocking {
+                EnhanceImage(engine, imageIo).run(
+                    request = EnhanceRequest(
+                        inputUris = listOf("content://input/first", "content://input/second"),
+                    ),
+                    outputNameFor = { index, _ -> "output-$index.png" },
+                ).onEach { emitted += it }.toList()
+            }
+            null
+        } catch (t: Throwable) {
+            t
+        }
+
+        assertSame(expected, error)
+        assertEquals(1, decodeCount)
         assertEquals(1, inferenceCalls)
         assertTrue(emitted.none { it.step == ProcessStep.DONE })
         assertTrue(emitted.none { it.outputUri != null })
