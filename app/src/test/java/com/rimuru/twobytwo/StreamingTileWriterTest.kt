@@ -4,8 +4,10 @@ import com.rimuru.twobytwo.domain.engine.StreamingTileWriter
 import com.rimuru.twobytwo.domain.engine.TileBlender
 import com.rimuru.twobytwo.domain.engine.TilingManager
 import java.io.File
+import java.io.IOException
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -36,6 +38,42 @@ class StreamingTileWriterTest {
             writer.close()
             writer.close()
 
+            assertEquals(0, writer.activeGroupCount)
+            assertTrue(spoolFiles(scratch).isEmpty())
+        }
+    }
+
+    @Test
+    fun `close retries failed spool deletion without replacing primary failure`() {
+        withScratchDirectory { scratch ->
+            val tiling = TilingManager(70, 66, scale = 4, tileSize = 32, overlap = 8)
+            val tile = tiling.tiles().first()
+            val deletionFailure = IOException("delete failed")
+            var deleteAttempts = 0
+            val writer = StreamingTileWriter(tiling.tiles(), tiling, scratch) { spool ->
+                deleteAttempts++
+                if (deleteAttempts == 1) throw deletionFailure
+                if (spool.exists() && !spool.delete()) throw IOException("retry delete failed")
+            }
+
+            writer.accept(deterministicTileBuffer(tile, tiling.scale), tile)
+            val expectedFailure = IllegalStateException("primary failure")
+            val thrownFailure = assertThrows(IllegalStateException::class.java) {
+                try {
+                    throw expectedFailure
+                } finally {
+                    writer.close()
+                }
+            }
+
+            assertSame(expectedFailure, thrownFailure)
+            assertEquals(1, deleteAttempts)
+            assertEquals(1, spoolFiles(scratch).size)
+
+            writer.close()
+            writer.close()
+
+            assertEquals(2, deleteAttempts)
             assertEquals(0, writer.activeGroupCount)
             assertTrue(spoolFiles(scratch).isEmpty())
         }

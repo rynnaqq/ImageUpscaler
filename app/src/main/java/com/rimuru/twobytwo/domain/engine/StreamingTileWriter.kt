@@ -5,18 +5,38 @@ import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
 
-class StreamingTileWriter(
+private fun deleteSpoolFile(spool: File) {
+    if (spool.exists() && !spool.delete()) {
+        throw IOException("failed to delete tile spool: ${spool.absolutePath}")
+    }
+}
+
+class StreamingTileWriter private constructor(
     tiles: List<TilingManager.Tile>,
     private val tiling: TilingManager,
     private val scratchDirectory: File,
-    private val writeRowCallback: ((ByteArray) -> Unit)? = null,
+    private val writeRowCallback: ((ByteArray) -> Unit)?,
+    private val deleteSpool: (File) -> Unit,
 ) : Closeable {
 
     constructor(
         tiles: List<TilingManager.Tile>,
         tiling: TilingManager,
+        scratchDirectory: File,
+    ) : this(tiles, tiling, scratchDirectory, null, ::deleteSpoolFile)
+
+    internal constructor(
+        tiles: List<TilingManager.Tile>,
+        tiling: TilingManager,
+        scratchDirectory: File,
+        deleteSpool: (File) -> Unit,
+    ) : this(tiles, tiling, scratchDirectory, null, deleteSpool)
+
+    constructor(
+        tiles: List<TilingManager.Tile>,
+        tiling: TilingManager,
         writeRow: (ByteArray) -> Unit,
-    ) : this(tiles, tiling, File(System.getProperty("java.io.tmpdir")), writeRow)
+    ) : this(tiles, tiling, File(System.getProperty("java.io.tmpdir")), writeRow, ::deleteSpoolFile)
 
     private data class TileEntry(
         val offset: Long,
@@ -43,6 +63,7 @@ class StreamingTileWriter(
     private var sourceRowScratch = ByteArray(0)
     private var maxActiveGroups = 0
     private var finished = false
+    private var cleanupPending = false
     private var closed = false
 
     internal val activeGroupCount: Int
@@ -152,7 +173,7 @@ class StreamingTileWriter(
 
     override fun close() {
         if (closed) return
-        closed = true
+        cleanupPending = true
         var failure: Exception? = null
         for (group in groups) {
             try {
@@ -166,21 +187,28 @@ class StreamingTileWriter(
                 }
             }
         }
-        activeGroups.clear()
-        sourceRowScratch = ByteArray(0)
-        failure?.let { throw it }
+        if (failure == null) {
+            activeGroups.clear()
+            sourceRowScratch = ByteArray(0)
+            cleanupPending = false
+            closed = true
+        }
     }
 
     private fun openGroup(group: RowGroup) {
         val spool = File.createTempFile("rimuru2x_tiles_", ".rgba", scratchDirectory)
-        val file = try {
-            RandomAccessFile(spool, "rw")
+        group.spool = spool
+        try {
+            group.file = RandomAccessFile(spool, "rw")
         } catch (error: Exception) {
-            spool.delete()
+            try {
+                deleteSpool(spool)
+                group.spool = null
+            } catch (cleanupFailure: Exception) {
+                error.addSuppressed(cleanupFailure)
+            }
             throw error
         }
-        group.spool = spool
-        group.file = file
         activeGroups.add(group)
         maxActiveGroups = maxOf(maxActiveGroups, activeGroups.size)
     }
@@ -229,33 +257,22 @@ class StreamingTileWriter(
     }
 
     private fun closeGroup(group: RowGroup) {
-        var failure: Exception? = null
         val file = group.file
-        group.file = null
         if (file != null) {
-            try {
-                file.close()
-            } catch (error: Exception) {
-                failure = error
-            }
+            file.close()
+            group.file = null
         }
         val spool = group.spool
-        group.spool = null
-        if (spool != null && spool.exists() && !spool.delete()) {
-            val error = IOException("failed to delete tile spool: ${spool.absolutePath}")
-            val current = failure
-            if (current == null) {
-                failure = error
-            } else {
-                current.addSuppressed(error)
-            }
+        if (spool != null) {
+            deleteSpool(spool)
+            group.spool = null
         }
         group.entries.clear()
         group.length = 0
-        failure?.let { throw it }
     }
 
     private fun checkOpen() {
+        check(!cleanupPending) { "tile spool cleanup is pending" }
         check(!closed) { "streaming tile writer is closed" }
     }
 }
