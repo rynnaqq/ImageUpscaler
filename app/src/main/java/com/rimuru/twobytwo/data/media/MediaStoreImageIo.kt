@@ -149,7 +149,11 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo, St
             FileOutputStream(temporaryFile).use { output ->
                 val pngWriter = PngRowWriter(output, width, height)
                 try {
-                    produceRows { row -> pngWriter.writeRgbaRow(row) }
+                    val rowBuffer = ByteArray(Math.toIntExact(width.toLong() * 4L))
+                    repeat(height) {
+                        produceRows(rowBuffer)
+                        pngWriter.writeRgbaRow(rowBuffer)
+                    }
                     currentCoroutineContext().ensureActive()
                     pngWriter.finish()
                 } finally {
