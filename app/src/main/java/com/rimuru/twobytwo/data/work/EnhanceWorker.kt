@@ -49,21 +49,39 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
     CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        val request = EnhanceRequestJson.decode(inputData.getString(KEY_REQUEST))
-            ?: return failure("Invalid enhancement request")
-        val baseName = inputData.getString(KEY_OUTPUT_NAME) ?: defaultBaseName()
-        val tier = DeviceTiers.classify(applicationContext)
-        val registry = ModelRegistry(applicationContext, ModelManifest.PLACEHOLDER)
-        val engine = OnnxInferenceEngine(registry)
-            .withProfile(request.modelProfile)
-            .withAccelerator(request.accelerator)
-        var lastBackend = engine.backendName
+        var engine: OnnxInferenceEngine? = null
+        var lastBackend = ""
         var last: JobProgress? = null
-        val outcomes = CharArray(request.inputUris.size) { OUTCOME_QUEUED }
-        val persistenceFailures = mutableSetOf<Int>()
-        var firstPersistenceFailure: String? = null
+        var outcomes: CharArray? = null
 
-        try {
+        return runGuarded(
+            close = { engine?.close() },
+            onFailure = { error ->
+                failure(
+                    terminalFailureText(error),
+                    lastBackend,
+                    last?.batchIndex,
+                    last?.batchTotal,
+                    outcomes?.let { String(it) },
+                )
+            },
+        ) {
+            val request = EnhanceRequestJson.decode(inputData.getString(KEY_REQUEST))
+                ?: return@runGuarded failure("Invalid enhancement request")
+            val baseName = inputData.getString(KEY_OUTPUT_NAME) ?: defaultBaseName()
+            val tier = DeviceTiers.classify(applicationContext)
+            val registry = ModelRegistry(applicationContext, ModelManifest.PLACEHOLDER)
+            val created = OnnxInferenceEngine(registry)
+            engine = created
+            val configured = created
+                .withProfile(request.modelProfile)
+                .withAccelerator(request.accelerator)
+            lastBackend = configured.backendName
+            val batchOutcomes = CharArray(request.inputUris.size) { OUTCOME_QUEUED }
+            outcomes = batchOutcomes
+            val persistenceFailures = mutableSetOf<Int>()
+            var firstPersistenceFailure: String? = null
+
             setForeground(createForegroundInfo(applicationContext.getString(R.string.proc_step_preparing)))
 
             val historyStore = FileHistoryStore(applicationContext)
@@ -75,7 +93,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             val runId = id.toString()
             val settingsJson = EnhanceRequestJson.encodeSettings(request)
             val useCase = EnhanceImage(
-                engine,
+                configured,
                 MediaStoreImageIo(applicationContext),
                 EnhanceImage.TileConfig(tier.recommendedTileSize),
                 modelProvider = registry,
@@ -96,14 +114,14 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                                 settingsJson = settingsJson,
                                 result = result,
                             )
-                            outcomes[batchIndex] = OUTCOME_SUCCESS
+                            batchOutcomes[batchIndex] = OUTCOME_SUCCESS
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: OutOfMemoryError) {
                             throw e
                          } catch (t: Throwable) {
                              persistenceFailures += batchIndex
-                             outcomes[batchIndex] = OUTCOME_FAILURE
+                             batchOutcomes[batchIndex] = OUTCOME_FAILURE
 
                             if (firstPersistenceFailure == null) {
                                 firstPersistenceFailure = t.message?.takeIf { it.isNotBlank() }
@@ -117,8 +135,8 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
 
             flow.collect { progress ->
                 last = progress
-                if (progress.itemCompleted && progress.batchIndex in outcomes.indices) {
-                    outcomes[progress.batchIndex] = when {
+                if (progress.itemCompleted && progress.batchIndex in batchOutcomes.indices) {
+                    batchOutcomes[progress.batchIndex] = when {
                         progress.batchIndex in persistenceFailures -> OUTCOME_FAILURE
                         progress.error == null -> OUTCOME_SUCCESS
                         else -> OUTCOME_FAILURE
@@ -138,7 +156,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                         KEY_OVERALL_OVERRIDE to progress.overallOverride?.toString().orEmpty(),
                         KEY_OUTPUT_URI to progress.outputUri.orEmpty(),
                         KEY_ERROR to progress.error.orEmpty(),
-                        KEY_BATCH_OUTCOMES to String(outcomes),
+                        KEY_BATCH_OUTCOMES to String(batchOutcomes),
                     ),
                 )
                 setForeground(createForegroundInfo(stepText(progress)))
@@ -147,15 +165,15 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             val outputUri = last?.outputUri
             val persistenceFailure = firstPersistenceFailure
             if (persistenceFailure != null) {
-                return failure(
+                return@runGuarded failure(
                     persistenceFailure,
                     lastBackend,
                     last?.batchIndex,
                     last?.batchTotal,
-                    String(outcomes),
+                    String(batchOutcomes),
                 )
             }
-            return if (last?.step == ProcessStep.DONE && !outputUri.isNullOrBlank()) {
+            return@runGuarded if (last?.step == ProcessStep.DONE && !outputUri.isNullOrBlank()) {
                 Result.success(
                     androidx.work.workDataOf(
                         KEY_OUTPUT_URI to outputUri,
@@ -163,7 +181,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                         KEY_SKIPPED_SMALL_FACES to (last?.skippedSmallFaces ?: 0),
                         KEY_BATCH_INDEX to (last?.batchIndex ?: 0),
                         KEY_BATCH_TOTAL to (last?.batchTotal ?: 1),
-                        KEY_BATCH_OUTCOMES to String(outcomes),
+                        KEY_BATCH_OUTCOMES to String(batchOutcomes),
                     ),
                 )
             } else {
@@ -172,29 +190,9 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                     last?.backendUsed ?: lastBackend,
                     last?.batchIndex,
                     last?.batchTotal,
-                    String(outcomes),
+                    String(batchOutcomes),
                 )
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: OutOfMemoryError) {
-            return failure(
-                terminalFailureMessage(e),
-                lastBackend,
-                last?.batchIndex,
-                last?.batchTotal,
-                String(outcomes),
-            )
-        } catch (t: Throwable) {
-            return failure(
-                t.message,
-                lastBackend,
-                last?.batchIndex,
-                last?.batchTotal,
-                String(outcomes),
-            )
-        } finally {
-            closeSafely { engine.close() }
         }
     }
 
@@ -276,6 +274,25 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Throwable) {
+            }
+        }
+
+        internal fun terminalFailureText(error: Throwable): String? =
+            if (error is OutOfMemoryError) terminalFailureMessage(error) else error.message
+
+        internal inline fun <T> runGuarded(
+            noinline close: () -> Unit,
+            onFailure: (Throwable) -> T,
+            block: () -> T,
+        ): T {
+            try {
+                return block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                return onFailure(t)
+            } finally {
+                closeSafely(close)
             }
         }
 

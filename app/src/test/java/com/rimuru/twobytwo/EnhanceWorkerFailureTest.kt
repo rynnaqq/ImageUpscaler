@@ -33,4 +33,46 @@ class EnhanceWorkerFailureTest {
 
         assertSame(expected, actual)
     }
+
+    @Test
+    fun `setup out of memory becomes a structured failure and still cleans up`() {
+        var closed = false
+
+        val message = EnhanceWorker.runGuarded(
+            close = { closed = true },
+            onFailure = { EnhanceWorker.terminalFailureText(it) },
+        ) { throw OutOfMemoryError("engine construction") }
+
+        assertEquals("out of memory: engine construction", message)
+        assertTrue(closed)
+    }
+
+    @Test
+    fun `setup failure without allocation detail keeps its message and still cleans up`() {
+        var closed = false
+
+        val message = EnhanceWorker.runGuarded(
+            close = { closed = true },
+            onFailure = { EnhanceWorker.terminalFailureText(it) },
+        ) { throw IllegalStateException("request decode failed") }
+
+        assertEquals("request decode failed", message)
+        assertTrue(closed)
+    }
+
+    @Test
+    fun `guarded body propagates cancellation and still cleans up`() {
+        val expected = CancellationException("cancelled during setup")
+        var closed = false
+
+        val actual = runCatching {
+            EnhanceWorker.runGuarded(
+                close = { closed = true },
+                onFailure = { EnhanceWorker.terminalFailureText(it) },
+            ) { throw expected }
+        }.exceptionOrNull()
+
+        assertSame(expected, actual)
+        assertTrue(closed)
+    }
 }
