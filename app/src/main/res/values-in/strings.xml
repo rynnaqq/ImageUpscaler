@@ -48,6 +48,8 @@
     <string name="config_accel_unavailable">Tidak tersedia di perangkat ini</string>
     <string name="config_option_selected">Dipilih</string>
     <string name="config_option_available">Tersedia</string>
+    <string name="config_control_on">Aktif</string>
+    <string name="config_control_off">Nonaktif</string>
     <string name="config_output_size">Output: %1$dx%2$d</string>
     <string name="config_cache_limit">Batas cache render</string>
     <string name="config_cache_limit_desc">Render antara dihapus otomatis saat batas ini terlampaui.</string>

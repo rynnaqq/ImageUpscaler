@@ -18,8 +18,10 @@ import com.rimuru.twobytwo.presentation.EnhanceViewModel.UiState
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CancellationException
 
 class SettingsStateTest {
 
@@ -44,6 +46,19 @@ class SettingsStateTest {
 
         assertFalse(EnhanceViewModel.requestFor(fast).useNeuralEngine)
         assertTrue(EnhanceViewModel.requestFor(ultra).useNeuralEngine)
+    }
+
+    @Test
+    fun `model profile choice clears the fast path offer without replacing the choice`() {
+        val offered = UiState(showFastPathOffer = true)
+
+        val fast = EnhanceViewModel.applySettingsIntent(offered, SetModelProfile(ModelProfile.FAST))
+        val ultra = EnhanceViewModel.applySettingsIntent(offered, SetModelProfile(ModelProfile.ULTRA))
+
+        assertEquals(ModelProfile.FAST, fast.modelProfile)
+        assertFalse(fast.showFastPathOffer)
+        assertEquals(ModelProfile.ULTRA, ultra.modelProfile)
+        assertFalse(ultra.showFastPathOffer)
     }
 
     @Test
@@ -102,6 +117,63 @@ class SettingsStateTest {
 
         assertEquals(supported, available)
         assertFalse(Accelerator.NPU in available)
+    }
+
+    @Test
+    fun `accelerator probe construction failure falls back to auto`() {
+        val createEngine: () -> AutoCloseable = { throw AssertionError("construction failed") }
+
+        val available = EnhanceViewModel.probeAvailableAccelerators(createEngine) { _, _ -> true }
+
+        assertEquals(setOf(Accelerator.AUTO), available)
+    }
+
+    @Test
+    fun `accelerator probe close failure falls back to auto`() {
+        val engine = object : AutoCloseable {
+            override fun close(): Unit = throw AssertionError("close failed")
+        }
+
+        val available = EnhanceViewModel.probeAvailableAccelerators(
+            createEngine = { engine },
+            probe = { _, accelerator -> accelerator == Accelerator.CPU },
+        )
+
+        assertEquals(setOf(Accelerator.AUTO), available)
+    }
+
+    @Test
+    fun `accelerator probe failure marks only the affected backend unsupported`() {
+        val engine = object : AutoCloseable {
+            override fun close() = Unit
+        }
+
+        val available = EnhanceViewModel.probeAvailableAccelerators(
+            createEngine = { engine },
+            probe = { _, accelerator ->
+                if (accelerator == Accelerator.GPU) throw AssertionError("probe failed")
+                accelerator == Accelerator.CPU
+            },
+        )
+
+        assertEquals(setOf(Accelerator.AUTO, Accelerator.CPU), available)
+    }
+
+    @Test
+    fun `accelerator probe preserves cancellation`() {
+        val cancellation = CancellationException("cancelled")
+        val engine = object : AutoCloseable {
+            override fun close() = Unit
+        }
+
+        val thrown = runCatching {
+            EnhanceViewModel.probeAvailableAccelerators(
+                createEngine = { engine },
+                probe = { _, _ -> throw cancellation },
+            )
+        }.exceptionOrNull()
+
+        assertSame(cancellation, thrown)
     }
 
     @Test

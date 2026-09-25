@@ -25,6 +25,7 @@ import com.rimuru.twobytwo.domain.model.ModelProfile
 import com.rimuru.twobytwo.domain.model.OutputFormat
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.model.ScaleFactor
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -282,7 +283,10 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             }
 
         internal fun applySettingsIntent(state: UiState, intent: Intent): UiState = when (intent) {
-            is Intent.SetModelProfile -> state.copy(modelProfile = intent.profile)
+            is Intent.SetModelProfile -> state.copy(
+                modelProfile = intent.profile,
+                showFastPathOffer = false,
+            )
             is Intent.SetExportFormat -> state.copy(exportPolicy = state.exportPolicy.copy(format = intent.format))
             is Intent.SetJpegQuality -> state.copy(
                 exportPolicy = state.exportPolicy.copy(jpegQuality = intent.quality.coerceIn(80, 100)),
@@ -328,23 +332,46 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             exportPolicy = state.exportPolicy,
         )
 
-        private fun probeAvailableAccelerators(app: Application): Set<Accelerator> {
-            val engine = OnnxInferenceEngine(ModelRegistry(app, ModelManifest.PLACEHOLDER))
-            return try {
-                filterAvailableAccelerators { accelerator ->
+        internal fun <T : AutoCloseable> probeAvailableAccelerators(
+            createEngine: () -> T,
+            probe: (T, Accelerator) -> Boolean,
+        ): Set<Accelerator> {
+            val engine = try {
+                createEngine()
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Throwable) {
+                return setOf(Accelerator.AUTO)
+            }
+            var available = setOf(Accelerator.AUTO)
+            var closeFailed = false
+            try {
+                available = filterAvailableAccelerators { accelerator ->
                     try {
-                        engine.isAvailable(accelerator)
-                    } catch (_: Exception) {
+                        probe(engine, accelerator)
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (_: Throwable) {
                         false
                     }
                 }.toSet()
             } finally {
                 try {
                     engine.close()
-                } catch (_: Exception) {
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Throwable) {
+                    closeFailed = true
                 }
             }
+            return if (closeFailed) setOf(Accelerator.AUTO) else available
         }
+
+        private fun probeAvailableAccelerators(app: Application): Set<Accelerator> =
+            probeAvailableAccelerators(
+                createEngine = { OnnxInferenceEngine(ModelRegistry(app, ModelManifest.PLACEHOLDER)) },
+                probe = { engine, accelerator -> engine.isAvailable(accelerator) },
+            )
 
         internal fun initialProgress(batchTotal: Int): JobProgress =
             JobProgress(

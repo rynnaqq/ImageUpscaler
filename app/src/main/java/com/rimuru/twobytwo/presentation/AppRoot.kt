@@ -237,7 +237,6 @@ fun ConfigScreen(
     onIntent: (EnhanceViewModel.Intent) -> Unit,
 ) {
     val previewUri = state.previewUri ?: return
-    var fastPathOfferDismissed by remember { mutableStateOf(false) }
     val selectedState = stringResource(R.string.config_option_selected)
     val availableState = stringResource(R.string.config_option_available)
     val unavailableState = stringResource(R.string.config_accel_unavailable)
@@ -335,6 +334,8 @@ fun ConfigScreen(
             title = stringResource(R.string.config_denoise),
             description = stringResource(R.string.config_denoise_desc),
         ) {
+            val denoiseLabel = stringResource(R.string.config_denoise)
+            val denoiseValue = stringResource(R.string.export_quality_value, state.denoise)
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                 val presets = listOf(
                     R.string.config_denoise_off to 0,
@@ -354,6 +355,10 @@ fun ConfigScreen(
                 value = state.denoise.toFloat(),
                 onValueChange = { onIntent(EnhanceViewModel.Intent.SetDenoise(it.toInt())) },
                 valueRange = 0f..100f,
+                modifier = Modifier.semantics {
+                    contentDescription = denoiseLabel
+                    stateDescription = denoiseValue
+                },
             )
         }
 
@@ -363,19 +368,29 @@ fun ConfigScreen(
             title = stringResource(R.string.config_face_restore),
             description = stringResource(R.string.config_face_desc),
         ) {
+            val faceRestoreLabel = stringResource(R.string.config_face_restore)
+            val faceRestoreState = stringResource(
+                if (state.faceRestore) R.string.config_control_on else R.string.config_control_off,
+            )
+            val faceStrengthLabel = stringResource(R.string.config_face_strength)
+            val faceStrengthValue = stringResource(R.string.export_quality_value, state.faceStrength)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
-                    stringResource(R.string.config_face_strength),
+                    faceStrengthLabel,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Switch(
                     checked = state.faceRestore,
                     onCheckedChange = { onIntent(EnhanceViewModel.Intent.SetFaceRestore(it)) },
+                    modifier = Modifier.semantics {
+                        contentDescription = faceRestoreLabel
+                        stateDescription = faceRestoreState
+                    },
                 )
             }
             AnimatedVisibility(state.faceRestore) {
@@ -383,6 +398,10 @@ fun ConfigScreen(
                     value = state.faceStrength.toFloat(),
                     onValueChange = { onIntent(EnhanceViewModel.Intent.SetFaceStrength(it.toInt())) },
                     valueRange = 0f..100f,
+                    modifier = Modifier.semantics {
+                        contentDescription = faceStrengthLabel
+                        stateDescription = faceStrengthValue
+                    },
                 )
             }
         }
@@ -614,10 +633,9 @@ fun ConfigScreen(
         }
     }
 
-    if (state.showFastPathOffer && !fastPathOfferDismissed) {
+    if (state.showFastPathOffer) {
         AlertDialog(
             onDismissRequest = {
-                fastPathOfferDismissed = true
                 onIntent(EnhanceViewModel.Intent.SetModelProfile(ModelProfile.ULTRA))
             },
             title = { Text(stringResource(R.string.config_model_profile)) },
@@ -625,7 +643,6 @@ fun ConfigScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        fastPathOfferDismissed = true
                         onIntent(EnhanceViewModel.Intent.SetModelProfile(ModelProfile.FAST))
                     },
                 ) { Text(stringResource(R.string.config_fast_path_yes)) }
@@ -633,7 +650,6 @@ fun ConfigScreen(
             dismissButton = {
                 TextButton(
                     onClick = {
-                        fastPathOfferDismissed = true
                         onIntent(EnhanceViewModel.Intent.SetModelProfile(ModelProfile.ULTRA))
                     },
                 ) { Text(stringResource(R.string.config_fast_path_no)) }
