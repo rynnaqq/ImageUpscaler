@@ -203,19 +203,16 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         batchIndex: Int? = null,
         batchTotal: Int? = null,
         outcomes: String? = null,
-    ): Result {
-        val data = Data.Builder()
-            .putString(
-                KEY_ERROR,
-                message?.takeIf { it.isNotBlank() }?.take(200)
-                    ?: applicationContext.getString(R.string.error_job_failed),
-            )
-            .putString(KEY_BACKEND, backend.orEmpty())
-        batchIndex?.let { data.putInt(KEY_BATCH_INDEX, it) }
-        batchTotal?.let { data.putInt(KEY_BATCH_TOTAL, it) }
-        outcomes?.let { data.putString(KEY_BATCH_OUTCOMES, it) }
-        return Result.failure(data.build())
-    }
+    ): Result = Result.failure(
+        failureData(
+            message = message,
+            backend = backend,
+            batchIndex = batchIndex,
+            batchTotal = batchTotal,
+            outcomes = outcomes,
+            fallbackError = applicationContext.getString(R.string.error_job_failed),
+        ),
+    )
 
     private fun stepText(p: JobProgress): String {
         val batchPrefix = if (p.batchTotal > 1) "(${p.batchIndex + 1}/${p.batchTotal}) " else ""
@@ -279,6 +276,26 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
 
         internal fun terminalFailureText(error: Throwable): String? =
             if (error is OutOfMemoryError) terminalFailureMessage(error) else error.message
+
+        internal fun failureData(
+            message: String?,
+            backend: String?,
+            batchIndex: Int?,
+            batchTotal: Int?,
+            outcomes: String?,
+            fallbackError: String,
+        ): Data {
+            val data = Data.Builder()
+                .putString(
+                    KEY_ERROR,
+                    message?.takeIf { it.isNotBlank() }?.take(200) ?: fallbackError,
+                )
+                .putString(KEY_BACKEND, backend.orEmpty())
+            batchIndex?.let { data.putInt(KEY_BATCH_INDEX, it) }
+            batchTotal?.let { data.putInt(KEY_BATCH_TOTAL, it) }
+            outcomes?.let { data.putString(KEY_BATCH_OUTCOMES, it) }
+            return data.build()
+        }
 
         internal inline fun <T> runGuarded(
             noinline close: () -> Unit,
