@@ -55,4 +55,41 @@ object TileBlender {
             }
         }
     }
+
+    fun blendRow(
+        tileRgba: ByteArray,
+        tile: com.rimuru.twobytwo.domain.engine.TilingManager.Tile,
+        tiling: TilingManager,
+        outRow: ByteArray,
+        outY: Int,
+    ) {
+        val scale = tiling.scale
+        val localY = outY - tile.inY * scale
+        val tileOutW = tile.inW * scale
+        val tileOutH = tile.inH * scale
+        if (outY < 0 || outY >= tiling.outHeight || localY < 0 || localY >= tileOutH) return
+
+        val srcRow = localY * tileOutW * 4
+        for (tx in 0 until tileOutW) {
+            val outX = tile.inX * scale + tx
+            if (outX < 0 || outX >= tiling.outWidth) continue
+
+            val w = tiling.featherWeight(outX, outY, tile)
+            val src = srcRow + tx * 4
+            val dst = outX * 4
+            if (w >= 0.999f) {
+                outRow[dst] = tileRgba[src]
+                outRow[dst + 1] = tileRgba[src + 1]
+                outRow[dst + 2] = tileRgba[src + 2]
+                outRow[dst + 3] = tileRgba[src + 3]
+            } else {
+                val iw = 1f - w
+                for (c in 0 until 4) {
+                    val o = outRow[dst + c].toInt() and 0xFF
+                    val s = tileRgba[src + c].toInt() and 0xFF
+                    outRow[dst + c] = (o * iw + s * w + 0.5f).toInt().coerceIn(0, 255).toByte()
+                }
+            }
+        }
+    }
 }
