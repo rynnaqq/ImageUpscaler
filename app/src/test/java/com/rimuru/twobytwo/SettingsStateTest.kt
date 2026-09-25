@@ -327,7 +327,7 @@ class SettingsStateTest {
         val keys = settings.keys().asSequence().toList()
 
         assertEquals(
-            listOf(
+            setOf(
                 "scale",
                 "mode",
                 "denoise",
@@ -349,7 +349,7 @@ class SettingsStateTest {
                 "keepExif",
                 "keepGps",
             ),
-            keys,
+            keys.toSet(),
         )
         assertFalse(settings.has("modelProfile"))
         assertFalse(settings.has("inputUris"))

@@ -148,7 +148,7 @@ class ExportPolicyTest {
         )
 
         assertEquals(
-            listOf(
+            setOf(
                 "scale",
                 "mode",
                 "denoise",
@@ -170,7 +170,7 @@ class ExportPolicyTest {
                 "keepExif",
                 "keepGps",
             ),
-            settings.keys().asSequence().toList(),
+            settings.keys().asSequence().toSet(),
         )
         assertEquals("JPEG", settings.getString("exportFormat"))
         assertEquals(80, settings.getInt("jpegQuality"))

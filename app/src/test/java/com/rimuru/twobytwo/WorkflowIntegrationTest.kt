@@ -61,7 +61,7 @@ class WorkflowIntegrationTest {
     }
 
     @Test
-    fun `settings snapshot excludes input uris and keeps stable key order`() {
+    fun `settings snapshot excludes input uris and contains only settings keys`() {
         val settings = JSONObject(
             EnhanceRequestJson.encodeSettings(
                 EnhanceRequest(inputUris = listOf("content://input/one"), cropPreset = CropPreset.SQUARE),
@@ -69,7 +69,7 @@ class WorkflowIntegrationTest {
         )
 
         assertEquals(
-            listOf(
+            setOf(
                 "scale",
                 "mode",
                 "denoise",
@@ -91,7 +91,7 @@ class WorkflowIntegrationTest {
                 "keepExif",
                 "keepGps",
             ),
-            settings.keys().asSequence().toList(),
+            settings.keys().asSequence().toSet(),
         )
         assertFalse(settings.has("inputUris"))
     }

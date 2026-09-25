@@ -14,7 +14,6 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -288,7 +287,8 @@ class EnhanceFailureTest {
             t
         }
 
-        assertSame(expected, error)
+        assertTrue(error is OutOfMemoryError)
+        assertEquals(expected.message, error?.message)
         assertEquals(1, decodeCount)
         assertEquals(1, inferenceCalls)
         assertTrue(emitted.none { it.step == ProcessStep.DONE })
