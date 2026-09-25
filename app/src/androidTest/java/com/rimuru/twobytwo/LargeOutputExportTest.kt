@@ -18,6 +18,10 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -150,6 +154,35 @@ class LargeOutputExportTest {
         }
 
         assertTrue(result.exceptionOrNull() is SpectrumException)
+        assertFalse(rowExists(name))
+        assertFalse(checkNotNull(temporaryFile).exists())
+    }
+
+    @Test
+    fun cancellationDuringRowProductionRemovesPendingRowAndTemporaryFile() = runBlocking {
+        val existingFiles = context.cacheDir.listFiles()?.toSet().orEmpty()
+        val name = trackName("streaming-cancellation.jpg")
+        var temporaryFile: File? = null
+        val export = async {
+            streamingIo().encodeStreaming(
+                width = 2,
+                height = 1,
+                destinationUri = name,
+                policy = ExportPolicy(format = OutputFormat.JPEG, keepExif = false),
+                exifSourceUri = null,
+            ) { row ->
+                val created = context.cacheDir.listFiles()!!.single { it !in existingFiles }
+                temporaryFile = created
+                temporaryFiles += created
+                row.fill(0x7F)
+                row[3] = 0xFF.toByte()
+                currentCoroutineContext()[Job]!!.cancel(CancellationException("cancelled during row production"))
+            }
+        }
+
+        val error = runCatching { export.await() }.exceptionOrNull()
+
+        assertTrue(error is CancellationException)
         assertFalse(rowExists(name))
         assertFalse(checkNotNull(temporaryFile).exists())
     }

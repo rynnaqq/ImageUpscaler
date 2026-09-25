@@ -23,6 +23,8 @@ import com.rimuru.twobytwo.domain.usecase.EnhanceImage
 import com.rimuru.twobytwo.domain.usecase.StreamingImageIo
 import java.io.File
 import java.io.FileOutputStream
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /**
  * Scoped-storage image I/O (PRD §5.2): decode picked content:// to RGBA, encode
@@ -148,12 +150,14 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo, St
                 val pngWriter = PngRowWriter(output, width, height)
                 try {
                     produceRows { row -> pngWriter.writeRgbaRow(row) }
+                    currentCoroutineContext().ensureActive()
                     pngWriter.finish()
                 } finally {
                     runCatching { pngWriter.close() }
                 }
             }
 
+            currentCoroutineContext().ensureActive()
             val options = TranscodeOptions.Builder(requirement).build()
             resolver.openOutputStream(outUri)!!.use { output ->
                 EncodedImageSource.from(temporaryFile).use { source ->
@@ -166,8 +170,11 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo, St
                 }
             }
 
+            currentCoroutineContext().ensureActive()
             copyAndVerifyExif(outUri, policy, exifSourceUri)
+            currentCoroutineContext().ensureActive()
             publish(outUri, values)
+            currentCoroutineContext().ensureActive()
             return outUri.toString()
         } catch (t: Throwable) {
             insertedUri?.let { uri -> runCatching { resolver.delete(uri, null, null) } }
