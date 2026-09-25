@@ -92,6 +92,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.rimuru.twobytwo.R
+import com.rimuru.twobytwo.data.history.HistoryRecord
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.EngineMode
@@ -100,6 +101,8 @@ import com.rimuru.twobytwo.domain.model.OutputFormat
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.ui.RimuruTheme
+import java.text.DateFormat
+import java.util.Date
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -120,6 +123,8 @@ fun AppRoot(initialSharedUri: String?) {
                 targetState = when {
                     state.error != null -> "error"
                     state.isProcessing -> "processing"
+                    state.historyOpen -> "history"
+                    state.selectedHistoryId != null && !state.outputUri.isNullOrBlank() -> "export"
                     state.progress?.step == ProcessStep.DONE && !state.outputUri.isNullOrBlank() -> "export"
                     state.pickedUris.isNotEmpty() -> "config"
                     else -> "home"
@@ -127,8 +132,13 @@ fun AppRoot(initialSharedUri: String?) {
                 label = "screens",
             ) { screen ->
                 when (screen) {
-                    "home" -> HomeScreen(state) { uris -> vm.onIntent(EnhanceViewModel.Intent.PickPhotos(uris)) }
+                    "home" -> HomeScreen(
+                        state = state,
+                        onPick = { uris -> vm.onIntent(EnhanceViewModel.Intent.PickPhotos(uris)) },
+                        onOpenHistory = { vm.onIntent(EnhanceViewModel.Intent.OpenHistory) },
+                    )
                     "config" -> ConfigScreen(state, vm::onIntent)
+                    "history" -> HistoryScreen(state, vm::onIntent)
                     "processing" -> ProcessingScreen(state, vm::onIntent)
                     "export" -> ExportScreen(state, vm::onIntent)
                     "error" -> Box(
@@ -157,6 +167,7 @@ fun AppRoot(initialSharedUri: String?) {
 fun HomeScreen(
     state: EnhanceViewModel.UiState,
     onPick: (List<android.net.Uri>) -> Unit,
+    onOpenHistory: () -> Unit,
 ) {
     val pickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia(maxItems = 50),
@@ -191,6 +202,9 @@ fun HomeScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
+            TextButton(onClick = onOpenHistory) {
+                Text(stringResource(R.string.home_recent_jobs))
+            }
 
             Spacer(Modifier.weight(1f))
 
@@ -225,6 +239,154 @@ fun HomeScreen(
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.weight(0.7f))
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HistoryScreen(
+    state: EnhanceViewModel.UiState,
+    onIntent: (EnhanceViewModel.Intent) -> Unit,
+) {
+    Scaffold(
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text(stringResource(R.string.history_title)) },
+                navigationIcon = {
+                    IconButton(onClick = { onIntent(EnhanceViewModel.Intent.OpenHistory) }) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.navigate_back),
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) { padding ->
+        if (state.history.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(stringResource(R.string.history_empty))
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                itemsIndexed(
+                    items = state.history,
+                    key = { _, record -> record.id },
+                ) { _, record ->
+                    HistoryRow(record, state.history, onIntent)
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun HistoryRow(
+    record: HistoryRecord,
+    history: List<HistoryRecord>,
+    onIntent: (EnhanceViewModel.Intent) -> Unit,
+) {
+    val parent = EnhanceViewModel.historyParent(record, history)
+    val sourceName = record.sourceUri.substringAfterLast('/').ifBlank { record.sourceUri }
+    val created = stringResource(
+        R.string.history_created,
+        DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(record.createdAt)),
+    )
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            sourceName,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            created,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            stringResource(R.string.history_dimensions, record.width, record.height),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        when {
+            record.parentId == null -> Text(
+                stringResource(R.string.history_original),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            parent != null -> {
+                Text(
+                    stringResource(R.string.history_child),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Text(
+                    stringResource(R.string.history_parent),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = {
+                    onIntent(EnhanceViewModel.Intent.ExportHistoryItem(parent.id))
+                }) {
+                    Text(stringResource(R.string.history_view_parent))
+                }
+            }
+            else -> {
+                Text(
+                    stringResource(R.string.history_child),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Text(
+                    stringResource(R.string.history_parent_unavailable),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (record.outputUri.isNullOrBlank()) {
+            Text(
+                stringResource(R.string.history_output_unavailable),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            TextButton(onClick = {
+                onIntent(EnhanceViewModel.Intent.RestoreHistorySettings(record.id))
+            }) {
+                Text(stringResource(R.string.history_restore))
+            }
+            TextButton(onClick = {
+                onIntent(EnhanceViewModel.Intent.DuplicateHistory(record.id))
+            }) {
+                Text(stringResource(R.string.history_duplicate))
+            }
+            TextButton(
+                enabled = !record.outputUri.isNullOrBlank(),
+                onClick = {
+                    onIntent(EnhanceViewModel.Intent.ExportHistoryItem(record.id))
+                },
+            ) {
+                Text(stringResource(R.string.history_export))
+            }
         }
     }
 }

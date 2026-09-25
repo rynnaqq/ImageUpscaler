@@ -116,6 +116,20 @@
     <string name="export_share">Share</string>
     <string name="export_save_copy">Save a copy</string>
 
+    <string name="history_title">History</string>
+    <string name="history_empty">No completed jobs yet</string>
+    <string name="history_restore">Restore settings</string>
+    <string name="history_duplicate">Duplicate settings</string>
+    <string name="history_export">Export output</string>
+    <string name="history_original">Original version</string>
+    <string name="history_child">Derived version</string>
+    <string name="history_parent">Parent version</string>
+    <string name="history_view_parent">View parent</string>
+    <string name="history_parent_unavailable">Parent version unavailable</string>
+    <string name="history_output_unavailable">Output not available yet</string>
+    <string name="history_created">Created %1$s</string>
+    <string name="history_dimensions">%1$d × %2$d</string>
+
     <!-- Errors -->
     <string name="error_model_missing">Neural model unavailable — fast mode used instead</string>
     <string name="error_job_failed">Enhancement failed</string>

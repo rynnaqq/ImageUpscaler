@@ -13,6 +13,9 @@ import com.rimuru.twobytwo.data.device.DeviceTiers
 import com.rimuru.twobytwo.data.engine.ModelManifest
 import com.rimuru.twobytwo.data.engine.ModelRegistry
 import com.rimuru.twobytwo.data.engine.OnnxInferenceEngine
+import com.rimuru.twobytwo.data.history.FileHistoryStore
+import com.rimuru.twobytwo.data.history.HistoryRecord
+import com.rimuru.twobytwo.data.history.HistoryStore
 import com.rimuru.twobytwo.data.work.EnhanceRequestJson
 import com.rimuru.twobytwo.data.work.EnhanceWorker
 import com.rimuru.twobytwo.domain.model.Accelerator
@@ -25,11 +28,17 @@ import com.rimuru.twobytwo.domain.model.ModelProfile
 import com.rimuru.twobytwo.domain.model.OutputFormat
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.model.ScaleFactor
+import com.rimuru.twobytwo.domain.model.modelProfile
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.UUID
 
 enum class BatchItemStatus {
@@ -77,6 +86,9 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         val exportPolicy: ExportPolicy = ExportPolicy(),
         val cacheLimitBytes: Long = EnhanceRequest.DEFAULT_CACHE_LIMIT_BYTES,
         val fastPathOfferHandled: Boolean = false,
+        val history: List<HistoryRecord> = emptyList(),
+        val historyOpen: Boolean = false,
+        val selectedHistoryId: String? = null,
     ) {
         val previewUri: String? get() = pickedUris.firstOrNull()
         val isProcessing: Boolean get() = progress != null && progress.step != ProcessStep.DONE
@@ -104,7 +116,14 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         data object StartEnhance : Intent
         data object CancelJob : Intent
         data object DismissError : Intent
+        data object OpenHistory : Intent
+        data class RestoreHistorySettings(val id: String) : Intent
+        data class DuplicateHistory(val id: String) : Intent
+        data class ExportHistoryItem(val id: String) : Intent
     }
+
+    private val historyStore = FileHistoryStore(app)
+    private var historyLoadJob: Job? = null
 
     private val _state = MutableStateFlow(
         UiState(
@@ -125,11 +144,18 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                         outputUri = null,
                         progress = null,
                         error = null,
+                        selectedHistoryId = null,
                     )
-                } else it
+                } else it.copy(selectedHistoryId = null)
             }
             Intent.ClearPhoto -> _state.update {
-                it.copy(pickedUris = emptyList(), batchItems = emptyList(), outputUri = null, progress = null)
+                it.copy(
+                    pickedUris = emptyList(),
+                    batchItems = emptyList(),
+                    outputUri = null,
+                    progress = null,
+                    selectedHistoryId = null,
+                )
             }
             is Intent.SetScale -> _state.update { it.copy(scale = intent.scale) }
             is Intent.SetMode -> _state.update { it.copy(mode = intent.mode) }
@@ -143,6 +169,10 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             is Intent.SetKeepExif,
             is Intent.SetKeepGps,
             is Intent.SetCacheLimitBytes -> _state.update { applySettingsIntent(it, intent) }
+            Intent.OpenHistory -> toggleHistory()
+            is Intent.RestoreHistorySettings -> restoreHistorySettings(intent.id)
+            is Intent.DuplicateHistory -> duplicateHistory(intent.id)
+            is Intent.ExportHistoryItem -> exportHistoryItem(intent.id)
             Intent.StartEnhance -> startJob()
             Intent.CancelJob -> cancelJob()
             Intent.DismissError -> _state.update { it.copy(error = null) }
@@ -270,7 +300,134 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         _state.value.jobId?.let { WorkManager.getInstance(getApplication()).cancelWorkById(it) }
     }
 
+    private fun toggleHistory() {
+        historyLoadJob?.cancel()
+        if (_state.value.historyOpen) {
+            historyLoadJob = null
+            _state.update { it.copy(historyOpen = false, selectedHistoryId = null) }
+            return
+        }
+        _state.update { it.copy(historyOpen = true, selectedHistoryId = null) }
+        historyLoadJob = viewModelScope.launch {
+            try {
+                val records = withContext(Dispatchers.IO) { loadHistory(historyStore) }
+                _state.update { current -> current.copy(history = records) }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun restoreHistorySettings(id: String) {
+        viewModelScope.launch {
+            try {
+                val record = withContext(Dispatchers.IO) { historyStore.find(id) } ?: return@launch
+                _state.update { current -> restoreHistoryState(current, record) ?: current }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun duplicateHistory(id: String) {
+        historyLoadJob?.cancel()
+        val newId = UUID.randomUUID().toString()
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    historyStore.duplicateSettings(id, newId)?.let { child ->
+                        child to historyStore.list()
+                    }
+                } ?: return@launch
+                val (child, records) = result
+                _state.update { current ->
+                    val restored = restoreHistoryState(current, child)
+                    (restored ?: current).copy(history = records)
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun exportHistoryItem(id: String) {
+        viewModelScope.launch {
+            try {
+                val record = withContext(Dispatchers.IO) { historyStore.find(id) } ?: return@launch
+                _state.update { current -> selectHistoryOutput(current, record) ?: current }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
     companion object {
+        internal fun loadHistory(store: HistoryStore): List<HistoryRecord> = store.list()
+
+        internal fun decodeHistoryRequest(record: HistoryRecord): EnhanceRequest? {
+            if (record.sourceUri.isBlank()) return null
+            return runCatching {
+                val json = JSONObject(record.settingsJson)
+                json.put("inputUris", JSONArray().put(record.sourceUri))
+                EnhanceRequestJson.decode(json.toString())
+            }.getOrNull()
+        }
+
+        internal fun restoreHistoryState(state: UiState, record: HistoryRecord): UiState? {
+            val request = decodeHistoryRequest(record) ?: return null
+            return state.copy(
+                pickedUris = listOf(record.sourceUri),
+                batchItems = initialBatchItems(listOf(record.sourceUri)),
+                pickedWidth = 0,
+                pickedHeight = 0,
+                scale = request.scale,
+                mode = request.mode,
+                denoise = request.denoise.percent,
+                faceRestore = request.faceRestoreEnabled,
+                faceStrength = request.faceRestoreStrength,
+                accelerator = request.accelerator.takeIf { it in state.availableAccelerators }
+                    ?: Accelerator.AUTO,
+                modelProfile = request.modelProfile,
+                exportPolicy = request.exportPolicy,
+                cacheLimitBytes = request.cacheLimitBytes,
+                outputUri = null,
+                progress = null,
+                jobId = null,
+                backendUsed = null,
+                error = null,
+                showFastPathOffer = false,
+                historyOpen = false,
+                selectedHistoryId = record.id,
+            )
+        }
+
+        internal fun selectHistoryOutput(state: UiState, record: HistoryRecord): UiState? {
+            if (record.sourceUri.isBlank() || record.outputUri.isNullOrBlank()) return null
+            return state.copy(
+                pickedUris = listOf(record.sourceUri),
+                batchItems = initialBatchItems(listOf(record.sourceUri)),
+                outputUri = record.outputUri,
+                progress = null,
+                jobId = null,
+                backendUsed = null,
+                error = null,
+                historyOpen = false,
+                selectedHistoryId = record.id,
+            )
+        }
+
+        internal fun historyParent(
+            record: HistoryRecord,
+            history: List<HistoryRecord>,
+        ): HistoryRecord? {
+            val parentId = record.parentId ?: return null
+            return history.firstOrNull { it.id == parentId }
+        }
+
         internal fun filterAvailableAccelerators(
             probe: (Accelerator) -> Boolean,
         ): Set<Accelerator> = Accelerator.entries
@@ -397,6 +554,8 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             batchItems = initialBatchItems(uris),
             backendUsed = null,
             error = null,
+            historyOpen = false,
+            selectedHistoryId = null,
         )
 
         internal fun applyBatchOutcomes(

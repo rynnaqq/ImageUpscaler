@@ -110,6 +110,20 @@
     <string name="export_share">Bagikan</string>
     <string name="export_save_copy">Simpan salinan</string>
 
+    <string name="history_title">Riwayat</string>
+    <string name="history_empty">Belum ada pekerjaan selesai</string>
+    <string name="history_restore">Pulihkan pengaturan</string>
+    <string name="history_duplicate">Duplikat pengaturan</string>
+    <string name="history_export">Ekspor hasil</string>
+    <string name="history_original">Versi asli</string>
+    <string name="history_child">Versi turunan</string>
+    <string name="history_parent">Versi induk</string>
+    <string name="history_view_parent">Lihat induk</string>
+    <string name="history_parent_unavailable">Versi induk tidak tersedia</string>
+    <string name="history_output_unavailable">Hasil belum tersedia</string>
+    <string name="history_created">Dibuat %1$s</string>
+    <string name="history_dimensions">%1$d × %2$d</string>
+
     <string name="error_model_missing">Model neural tidak tersedia — mode cepat digunakan</string>
     <string name="error_job_failed">Penyempurnaan gagal</string>
     <string name="error_input_too_large">Foto terlalu besar (%1$d MP). Silakan pilih yang lebih kecil.</string>
