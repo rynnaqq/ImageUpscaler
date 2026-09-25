@@ -10,13 +10,19 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.rimuru.twobytwo.data.device.DeviceTiers
+import com.rimuru.twobytwo.data.engine.ModelManifest
+import com.rimuru.twobytwo.data.engine.ModelRegistry
+import com.rimuru.twobytwo.data.engine.OnnxInferenceEngine
 import com.rimuru.twobytwo.data.work.EnhanceRequestJson
 import com.rimuru.twobytwo.data.work.EnhanceWorker
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.EngineMode
+import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.JobProgress
+import com.rimuru.twobytwo.domain.model.ModelProfile
+import com.rimuru.twobytwo.domain.model.OutputFormat
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.model.ScaleFactor
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -65,9 +71,17 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         // Result
         val outputUri: String? = null,
         val error: String? = null,
+        val modelProfile: ModelProfile = ModelProfile.ULTRA,
+        val availableAccelerators: Set<Accelerator> = setOf(Accelerator.AUTO, Accelerator.CPU),
+        val exportPolicy: ExportPolicy = ExportPolicy(),
+        val cacheLimitBytes: Long = EnhanceRequest.DEFAULT_CACHE_LIMIT_BYTES,
     ) {
         val previewUri: String? get() = pickedUris.firstOrNull()
         val isProcessing: Boolean get() = progress != null && progress.step != ProcessStep.DONE
+        val outputFormat: OutputFormat get() = exportPolicy.format
+        val quality: Int get() = exportPolicy.effectiveJpegQuality
+        val keepExif: Boolean get() = exportPolicy.keepExif
+        val keepGps: Boolean get() = exportPolicy.keepGps
     }
 
     sealed interface Intent {
@@ -78,13 +92,24 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         data class SetDenoise(val percent: Int) : Intent
         data class SetFaceRestore(val enabled: Boolean) : Intent
         data class SetFaceStrength(val percent: Int) : Intent
+        data class SetModelProfile(val profile: ModelProfile) : Intent
         data class SetAccelerator(val accelerator: Accelerator) : Intent
+        data class SetExportFormat(val format: OutputFormat) : Intent
+        data class SetJpegQuality(val quality: Int) : Intent
+        data class SetKeepExif(val enabled: Boolean) : Intent
+        data class SetKeepGps(val enabled: Boolean) : Intent
+        data class SetCacheLimitBytes(val bytes: Long) : Intent
         data object StartEnhance : Intent
         data object CancelJob : Intent
         data object DismissError : Intent
     }
 
-    private val _state = MutableStateFlow(UiState(isLowSpec = DeviceTiers.classify(app).isLowSpec))
+    private val _state = MutableStateFlow(
+        UiState(
+            isLowSpec = DeviceTiers.classify(app).isLowSpec,
+            availableAccelerators = probeAvailableAccelerators(app),
+        ),
+    )
     val state: StateFlow<UiState> = _state
 
     fun onIntent(intent: Intent) {
@@ -109,7 +134,13 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             is Intent.SetDenoise -> _state.update { it.copy(denoise = intent.percent.coerceIn(0, 100)) }
             is Intent.SetFaceRestore -> _state.update { it.copy(faceRestore = intent.enabled) }
             is Intent.SetFaceStrength -> _state.update { it.copy(faceStrength = intent.percent.coerceIn(0, 100)) }
-            is Intent.SetAccelerator -> _state.update { it.copy(accelerator = intent.accelerator) }
+            is Intent.SetModelProfile,
+            is Intent.SetAccelerator,
+            is Intent.SetExportFormat,
+            is Intent.SetJpegQuality,
+            is Intent.SetKeepExif,
+            is Intent.SetKeepGps,
+            is Intent.SetCacheLimitBytes -> _state.update { applySettingsIntent(it, intent) }
             Intent.StartEnhance -> startJob()
             Intent.CancelJob -> cancelJob()
             Intent.DismissError -> _state.update { it.copy(error = null) }
@@ -119,21 +150,18 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
     private fun startJob() {
         val s = _state.value
         if (s.pickedUris.isEmpty()) return
-        if (s.isLowSpec && !s.showFastPathOffer && s.accelerator == Accelerator.AUTO) {
+        if (
+            s.isLowSpec &&
+            !s.showFastPathOffer &&
+            s.accelerator == Accelerator.AUTO &&
+            s.modelProfile == ModelProfile.ULTRA
+        ) {
             // US-09: offer fast path once on low-spec devices
             _state.update { it.copy(showFastPathOffer = true) }
             return
         }
 
-        val request = EnhanceRequest(
-            inputUris = s.pickedUris,
-            scale = s.scale,
-            mode = s.mode,
-            denoise = DenoiseStrength(s.denoise),
-            faceRestoreEnabled = s.faceRestore,
-            faceRestoreStrength = s.faceStrength,
-            accelerator = s.accelerator,
-        )
+        val request = requestFor(s)
         val json = EnhanceRequestJson.encode(request)
         val workData = Data.Builder().putString(EnhanceWorker.KEY_REQUEST, json).build()
         val work = OneTimeWorkRequestBuilder<EnhanceWorker>()
@@ -246,6 +274,78 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        internal fun filterAvailableAccelerators(
+            probe: (Accelerator) -> Boolean,
+        ): Set<Accelerator> = Accelerator.entries
+            .filterTo(linkedSetOf()) { accelerator ->
+                accelerator == Accelerator.AUTO || probe(accelerator)
+            }
+
+        internal fun applySettingsIntent(state: UiState, intent: Intent): UiState = when (intent) {
+            is Intent.SetModelProfile -> state.copy(modelProfile = intent.profile)
+            is Intent.SetExportFormat -> state.copy(exportPolicy = state.exportPolicy.copy(format = intent.format))
+            is Intent.SetJpegQuality -> state.copy(
+                exportPolicy = state.exportPolicy.copy(jpegQuality = intent.quality.coerceIn(80, 100)),
+            )
+            is Intent.SetKeepExif -> state.copy(
+                exportPolicy = state.exportPolicy.copy(keepExif = intent.enabled),
+            )
+            is Intent.SetKeepGps -> state.copy(
+                exportPolicy = state.exportPolicy.copy(keepGps = intent.enabled),
+            )
+            is Intent.SetCacheLimitBytes -> state.copy(
+                cacheLimitBytes = intent.bytes.coerceIn(
+                    EnhanceRequest.MIN_CACHE_LIMIT_BYTES,
+                    EnhanceRequest.MAX_CACHE_LIMIT_BYTES,
+                ),
+            )
+            is Intent.SetAccelerator -> if (intent.accelerator in state.availableAccelerators) {
+                state.copy(accelerator = intent.accelerator)
+            } else {
+                state
+            }
+            else -> state
+        }
+
+        internal fun requestFor(state: UiState): EnhanceRequest = EnhanceRequest(
+            inputUris = state.pickedUris,
+            scale = state.scale,
+            mode = state.mode,
+            denoise = DenoiseStrength(state.denoise),
+            faceRestoreEnabled = state.faceRestore,
+            faceRestoreStrength = state.faceStrength,
+            accelerator = state.accelerator.takeIf { it in state.availableAccelerators } ?: Accelerator.AUTO,
+            useNeuralEngine = state.modelProfile == ModelProfile.ULTRA,
+            sharpen = true,
+            deblurEnabled = false,
+            deblurStrength = 50,
+            scratchRepairEnabled = false,
+            scratchRepairStrength = 50,
+            colorizeEnabled = false,
+            colorizeStrength = 50,
+            cropPreset = null,
+            cacheLimitBytes = state.cacheLimitBytes,
+            exportPolicy = state.exportPolicy,
+        )
+
+        private fun probeAvailableAccelerators(app: Application): Set<Accelerator> {
+            val engine = OnnxInferenceEngine(ModelRegistry(app, ModelManifest.PLACEHOLDER))
+            return try {
+                filterAvailableAccelerators { accelerator ->
+                    try {
+                        engine.isAvailable(accelerator)
+                    } catch (_: Exception) {
+                        false
+                    }
+                }.toSet()
+            } finally {
+                try {
+                    engine.close()
+                } catch (_: Exception) {
+                }
+            }
+        }
+
         internal fun initialProgress(batchTotal: Int): JobProgress =
             JobProgress(
                 step = ProcessStep.PREPARING,

@@ -15,6 +15,11 @@ enum class EngineMode {
     CREATIVE;
 }
 
+enum class ModelProfile {
+    FAST,
+    ULTRA,
+}
+
 enum class Accelerator {
     AUTO,
     GPU,
@@ -119,6 +124,9 @@ data class EnhanceRequest(
         const val MAX_CACHE_LIMIT_BYTES: Long = 2L * 1024L * 1024L * 1024L
     }
 }
+
+val EnhanceRequest.modelProfile: ModelProfile
+    get() = if (useNeuralEngine) ModelProfile.ULTRA else ModelProfile.FAST
 
 enum class ProcessStep {
     PREPARING,

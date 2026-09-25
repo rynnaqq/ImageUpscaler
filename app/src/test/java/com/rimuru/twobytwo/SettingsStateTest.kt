@@ -1,0 +1,201 @@
+package com.rimuru.twobytwo
+
+import com.rimuru.twobytwo.data.work.EnhanceRequestJson
+import com.rimuru.twobytwo.domain.model.Accelerator
+import com.rimuru.twobytwo.domain.model.EnhanceRequest
+import com.rimuru.twobytwo.domain.model.ExportPolicy
+import com.rimuru.twobytwo.domain.model.ModelProfile
+import com.rimuru.twobytwo.domain.model.OutputFormat
+import com.rimuru.twobytwo.domain.model.modelProfile
+import com.rimuru.twobytwo.presentation.EnhanceViewModel
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetCacheLimitBytes
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetExportFormat
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetJpegQuality
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetKeepExif
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetKeepGps
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetModelProfile
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.UiState
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class SettingsStateTest {
+
+    @Test
+    fun `initial settings preserve the legacy defaults`() {
+        val state = UiState()
+
+        assertEquals(ModelProfile.ULTRA, state.modelProfile)
+        assertEquals(Accelerator.AUTO, state.accelerator)
+        assertEquals(ExportPolicy(), state.exportPolicy)
+        assertEquals(OutputFormat.PNG, state.outputFormat)
+        assertEquals(97, state.quality)
+        assertTrue(state.keepExif)
+        assertFalse(state.keepGps)
+        assertEquals(EnhanceRequest.DEFAULT_CACHE_LIMIT_BYTES, state.cacheLimitBytes)
+    }
+
+    @Test
+    fun `model profile maps to the legacy neural flag`() {
+        val fast = EnhanceViewModel.applySettingsIntent(UiState(), SetModelProfile(ModelProfile.FAST))
+        val ultra = EnhanceViewModel.applySettingsIntent(UiState(), SetModelProfile(ModelProfile.ULTRA))
+
+        assertFalse(EnhanceViewModel.requestFor(fast).useNeuralEngine)
+        assertTrue(EnhanceViewModel.requestFor(ultra).useNeuralEngine)
+    }
+
+    @Test
+    fun `export settings update one policy field at a time`() {
+        val withQuality = EnhanceViewModel.applySettingsIntent(UiState(), SetJpegQuality(86))
+        val webp = EnhanceViewModel.applySettingsIntent(withQuality, SetExportFormat(OutputFormat.WEBP))
+        val metadata = EnhanceViewModel.applySettingsIntent(webp, SetKeepExif(false))
+        val withGps = EnhanceViewModel.applySettingsIntent(metadata, SetKeepGps(true))
+
+        assertEquals(86, withGps.quality)
+        assertEquals(OutputFormat.WEBP, withGps.outputFormat)
+        assertFalse(withGps.keepExif)
+        assertTrue(withGps.keepGps)
+    }
+
+    @Test
+    fun `jpeg quality intent clamps to 80 through 100`() {
+        val below = EnhanceViewModel.applySettingsIntent(UiState(), SetJpegQuality(79))
+        val above = EnhanceViewModel.applySettingsIntent(UiState(), SetJpegQuality(101))
+        val png = EnhanceViewModel.applySettingsIntent(below, SetExportFormat(OutputFormat.PNG))
+        val webp = EnhanceViewModel.applySettingsIntent(above, SetExportFormat(OutputFormat.WEBP))
+
+        assertEquals(80, below.quality)
+        assertEquals(100, above.quality)
+        assertEquals(100, EnhanceViewModel.requestFor(png).exportPolicy.encoderQuality)
+        assertEquals(100, EnhanceViewModel.requestFor(webp).exportPolicy.encoderQuality)
+    }
+
+    @Test
+    fun `cache limit intent clamps to the existing request bounds`() {
+        val minimum = EnhanceViewModel.applySettingsIntent(
+            UiState(),
+            SetCacheLimitBytes(EnhanceRequest.MIN_CACHE_LIMIT_BYTES - 1L),
+        )
+        val maximum = EnhanceViewModel.applySettingsIntent(
+            UiState(),
+            SetCacheLimitBytes(EnhanceRequest.MAX_CACHE_LIMIT_BYTES + 1L),
+        )
+
+        assertEquals(EnhanceRequest.MIN_CACHE_LIMIT_BYTES, minimum.cacheLimitBytes)
+        assertEquals(EnhanceRequest.MAX_CACHE_LIMIT_BYTES, maximum.cacheLimitBytes)
+        listOf(minimum, maximum).forEach { state ->
+            val request = EnhanceViewModel.requestFor(state)
+            assertEquals(
+                state.cacheLimitBytes,
+                EnhanceRequestJson.decode(EnhanceRequestJson.encode(request))?.cacheLimitBytes,
+            )
+        }
+    }
+
+    @Test
+    fun `accelerator filtering uses the isAvailable probe`() {
+        val supported = setOf(Accelerator.AUTO, Accelerator.CPU, Accelerator.GPU)
+
+        val available = EnhanceViewModel.filterAvailableAccelerators { it in supported }
+
+        assertEquals(supported, available)
+        assertFalse(Accelerator.NPU in available)
+    }
+
+    @Test
+    fun `unavailable accelerator intent is ignored`() {
+        val state = UiState(
+            accelerator = Accelerator.CPU,
+            availableAccelerators = setOf(Accelerator.AUTO, Accelerator.CPU),
+        )
+
+        val reduced = EnhanceViewModel.applySettingsIntent(
+            state,
+            EnhanceViewModel.Intent.SetAccelerator(Accelerator.NPU),
+        )
+        val impossible = EnhanceViewModel.requestFor(
+            state.copy(accelerator = Accelerator.NPU),
+        )
+
+        assertEquals(Accelerator.CPU, reduced.accelerator)
+        assertEquals(Accelerator.AUTO, impossible.accelerator)
+    }
+
+    @Test
+    fun `settings request round trips through existing worker JSON`() {
+        var state = UiState()
+        state = EnhanceViewModel.applySettingsIntent(state, SetModelProfile(ModelProfile.FAST))
+        state = EnhanceViewModel.applySettingsIntent(state, SetExportFormat(OutputFormat.JPEG))
+        state = EnhanceViewModel.applySettingsIntent(state, SetJpegQuality(80))
+        state = EnhanceViewModel.applySettingsIntent(state, SetKeepExif(false))
+        state = EnhanceViewModel.applySettingsIntent(state, SetKeepGps(true))
+        state = EnhanceViewModel.applySettingsIntent(state, SetCacheLimitBytes(1024L * 1024L * 1024L))
+        val request = EnhanceViewModel.requestFor(state)
+        val encoded = EnhanceRequestJson.encode(request)
+        val decoded = EnhanceRequestJson.decode(encoded)
+        val json = JSONObject(encoded)
+
+        assertEquals(request, decoded)
+        assertFalse(json.getBoolean("neural"))
+        assertEquals(1024L * 1024L * 1024L, json.getLong("cacheLimitBytes"))
+        assertEquals("JPEG", json.getString("exportFormat"))
+        assertEquals(80, json.getInt("jpegQuality"))
+        assertFalse(json.getBoolean("keepExif"))
+        assertTrue(json.getBoolean("keepGps"))
+    }
+
+    @Test
+    fun `legacy worker JSON defaults to ULTRA`() {
+        val legacyJson = JSONObject(
+            EnhanceRequestJson.encode(EnhanceRequest(inputUris = listOf("content://input/legacy"))),
+        ).apply {
+            remove("neural")
+            remove("exportFormat")
+            remove("jpegQuality")
+            remove("keepExif")
+            remove("keepGps")
+        }.toString()
+
+        val decoded = EnhanceRequestJson.decode(legacyJson)
+
+        assertTrue(decoded?.useNeuralEngine == true)
+        assertEquals(ModelProfile.ULTRA, decoded?.modelProfile)
+        assertEquals(ExportPolicy(), decoded?.exportPolicy)
+    }
+
+    @Test
+    fun `settings snapshot does not add a second profile wire key`() {
+        val settings = JSONObject(EnhanceRequestJson.encodeSettings(EnhanceViewModel.requestFor(UiState())))
+        val keys = settings.keys().asSequence().toList()
+
+        assertEquals(
+            listOf(
+                "scale",
+                "mode",
+                "denoise",
+                "faceRestore",
+                "faceStrength",
+                "accelerator",
+                "neural",
+                "sharpen",
+                "deblurEnabled",
+                "deblurStrength",
+                "scratchRepairEnabled",
+                "scratchRepairStrength",
+                "colorizeEnabled",
+                "colorizeStrength",
+                "cropPreset",
+                "cacheLimitBytes",
+                "exportFormat",
+                "jpegQuality",
+                "keepExif",
+                "keepGps",
+            ),
+            keys,
+        )
+        assertFalse(settings.has("modelProfile"))
+        assertFalse(settings.has("inputUris"))
+    }
+}

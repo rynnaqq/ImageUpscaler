@@ -32,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -89,14 +90,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlin.math.abs
 import coil.compose.AsyncImage
 import com.rimuru.twobytwo.R
 import com.rimuru.twobytwo.domain.model.Accelerator
+import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.EngineMode
+import com.rimuru.twobytwo.domain.model.ModelProfile
+import com.rimuru.twobytwo.domain.model.OutputFormat
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.ui.RimuruTheme
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /** App shell: theme + navigation between S1-S5 via the single MVI state machine. */
 @Composable
@@ -232,6 +237,10 @@ fun ConfigScreen(
     onIntent: (EnhanceViewModel.Intent) -> Unit,
 ) {
     val previewUri = state.previewUri ?: return
+    var fastPathOfferDismissed by remember { mutableStateOf(false) }
+    val selectedState = stringResource(R.string.config_option_selected)
+    val availableState = stringResource(R.string.config_option_available)
+    val unavailableState = stringResource(R.string.config_accel_unavailable)
 
     Scaffold(
         topBar = {
@@ -378,21 +387,207 @@ fun ConfigScreen(
             }
         }
 
+        FeatureRow(
+            icon = Icons.Filled.AutoAwesome,
+            title = stringResource(R.string.config_model_profile),
+            description = stringResource(R.string.config_model_profile_desc),
+        ) {
+            val profiles = ModelProfile.entries
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                profiles.forEachIndexed { index, profile ->
+                    val label = stringResource(profileLabel(profile))
+                    val description = stringResource(profileDescription(profile))
+                    SegmentedButton(
+                        selected = state.modelProfile == profile,
+                        onClick = { onIntent(EnhanceViewModel.Intent.SetModelProfile(profile)) },
+                        shape = SegmentedButtonDefaults.itemShape(index, profiles.size),
+                        modifier = Modifier.semantics {
+                            contentDescription = label
+                            stateDescription = if (state.modelProfile == profile) {
+                                selectedState
+                            } else {
+                                "$availableState, $description"
+                            }
+                        },
+                    ) { Text(label) }
+                }
+            }
+            profiles.forEach { profile ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        stringResource(profileLabel(profile)),
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    Text(
+                        stringResource(profileDescription(profile)),
+                        modifier = Modifier.weight(1f).padding(start = 12.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.End,
+                    )
+                }
+            }
+        }
+
         // Accelerator — chips in a FlowRow: 4 labels don't fit one segmented row on phones
+        val acceleratorDescription = when {
+            state.accelerator !in state.availableAccelerators -> stringResource(R.string.config_accel_unavailable)
+            state.accelerator == Accelerator.AUTO -> stringResource(R.string.config_accel_auto_status)
+            else -> stringResource(accelLabel(state.accelerator))
+        }
         FeatureRow(
             icon = Icons.Filled.Memory,
             title = stringResource(R.string.config_accelerator),
-            description = stringResource(R.string.config_accel_desc),
+            description = acceleratorDescription,
         ) {
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Accelerator.entries.forEach { acc ->
+                    val label = stringResource(accelLabel(acc))
+                    val enabled = acc == Accelerator.AUTO || acc in state.availableAccelerators
                     FilterChip(
                         selected = state.accelerator == acc,
                         onClick = { onIntent(EnhanceViewModel.Intent.SetAccelerator(acc)) },
-                        label = { Text(stringResource(accelLabel(acc))) },
+                        enabled = enabled,
+                        label = {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(label)
+                                if (!enabled) {
+                                    Text(
+                                        stringResource(R.string.config_accel_unavailable),
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                            }
+                        },
+                        modifier = Modifier.semantics {
+                            contentDescription = label
+                            stateDescription = when {
+                                !enabled -> unavailableState
+                                state.accelerator == acc -> selectedState
+                                else -> availableState
+                            }
+                        },
+                    )
+                }
+            }
+        }
+
+        FeatureRow(
+            icon = Icons.Filled.Texture,
+            title = stringResource(R.string.export_format),
+            description = stringResource(R.string.export_format_desc),
+        ) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutputFormat.entries.forEach { format ->
+                    val label = stringResource(formatLabel(format))
+                    val selected = state.outputFormat == format
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onIntent(EnhanceViewModel.Intent.SetExportFormat(format)) },
+                        label = { Text(label) },
+                        modifier = Modifier.semantics {
+                            contentDescription = label
+                            stateDescription = if (selected) selectedState else availableState
+                        },
+                    )
+                }
+            }
+            if (state.outputFormat == OutputFormat.JPEG) {
+                val qualityLabel = stringResource(R.string.export_quality)
+                val qualityDescription = stringResource(R.string.export_quality_desc)
+                val qualityValue = stringResource(R.string.export_quality_value, state.quality)
+                Text(qualityLabel, style = MaterialTheme.typography.labelLarge)
+                Text(
+                    qualityDescription,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    qualityValue,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Slider(
+                    value = state.quality.toFloat(),
+                    onValueChange = { onIntent(EnhanceViewModel.Intent.SetJpegQuality(it.roundToInt())) },
+                    valueRange = 80f..100f,
+                    steps = 19,
+                    modifier = Modifier.semantics {
+                        contentDescription = qualityLabel
+                        stateDescription = "$qualityDescription, $qualityValue"
+                    },
+                )
+            }
+        }
+
+        val exifLabel = stringResource(R.string.export_keep_exif)
+        val exifDescription = stringResource(R.string.export_keep_exif_desc)
+        FeatureRow(
+            icon = Icons.Filled.PhotoLibrary,
+            title = exifLabel,
+            description = exifDescription,
+        ) {
+            Switch(
+                checked = state.keepExif,
+                onCheckedChange = { onIntent(EnhanceViewModel.Intent.SetKeepExif(it)) },
+                modifier = Modifier.semantics {
+                    contentDescription = exifLabel
+                    stateDescription = exifDescription
+                },
+            )
+        }
+
+        val gpsLabel = stringResource(R.string.export_keep_gps)
+        val gpsDescription = stringResource(R.string.export_keep_gps_desc)
+        FeatureRow(
+            icon = Icons.Filled.LocationOn,
+            title = gpsLabel,
+            description = gpsDescription,
+        ) {
+            Switch(
+                checked = state.keepGps,
+                onCheckedChange = { onIntent(EnhanceViewModel.Intent.SetKeepGps(it)) },
+                modifier = Modifier.semantics {
+                    contentDescription = gpsLabel
+                    stateDescription = gpsDescription
+                },
+            )
+        }
+
+        val cacheLimits = listOf(
+            EnhanceRequest.MIN_CACHE_LIMIT_BYTES to stringResource(R.string.config_cache_mb, 500),
+            1024L * 1024L * 1024L to stringResource(R.string.config_cache_gb, "1"),
+            1536L * 1024L * 1024L to stringResource(R.string.config_cache_gb, "1.5"),
+            EnhanceRequest.MAX_CACHE_LIMIT_BYTES to stringResource(R.string.config_cache_gb, "2"),
+        )
+        FeatureRow(
+            icon = Icons.Filled.Memory,
+            title = stringResource(R.string.config_cache_limit),
+            description = stringResource(R.string.config_cache_limit_desc),
+        ) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                cacheLimits.forEach { (bytes, label) ->
+                    val selected = state.cacheLimitBytes == bytes
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onIntent(EnhanceViewModel.Intent.SetCacheLimitBytes(bytes)) },
+                        label = { Text(label) },
+                        modifier = Modifier.semantics {
+                            contentDescription = label
+                            stateDescription = if (selected) selectedState else availableState
+                        },
                     )
                 }
             }
@@ -417,6 +612,33 @@ fun ConfigScreen(
         }
             Spacer(Modifier.height(12.dp))
         }
+    }
+
+    if (state.showFastPathOffer && !fastPathOfferDismissed) {
+        AlertDialog(
+            onDismissRequest = {
+                fastPathOfferDismissed = true
+                onIntent(EnhanceViewModel.Intent.SetModelProfile(ModelProfile.ULTRA))
+            },
+            title = { Text(stringResource(R.string.config_model_profile)) },
+            text = { Text(stringResource(R.string.config_fast_path_offer)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        fastPathOfferDismissed = true
+                        onIntent(EnhanceViewModel.Intent.SetModelProfile(ModelProfile.FAST))
+                    },
+                ) { Text(stringResource(R.string.config_fast_path_yes)) }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        fastPathOfferDismissed = true
+                        onIntent(EnhanceViewModel.Intent.SetModelProfile(ModelProfile.ULTRA))
+                    },
+                ) { Text(stringResource(R.string.config_fast_path_no)) }
+            },
+        )
     }
 }
 
@@ -470,6 +692,25 @@ private fun accelLabel(acc: Accelerator): Int = when (acc) {
     Accelerator.GPU -> R.string.config_accel_gpu
     Accelerator.NPU -> R.string.config_accel_npu
     Accelerator.CPU -> R.string.config_accel_cpu
+}
+
+@Composable
+private fun profileLabel(profile: ModelProfile): Int = when (profile) {
+    ModelProfile.FAST -> R.string.config_model_fast
+    ModelProfile.ULTRA -> R.string.config_model_ultra
+}
+
+@Composable
+private fun profileDescription(profile: ModelProfile): Int = when (profile) {
+    ModelProfile.FAST -> R.string.config_model_fast_desc
+    ModelProfile.ULTRA -> R.string.config_model_ultra_desc
+}
+
+@Composable
+private fun formatLabel(format: OutputFormat): Int = when (format) {
+    OutputFormat.PNG -> R.string.export_png
+    OutputFormat.JPEG -> R.string.export_jpeg
+    OutputFormat.WEBP -> R.string.export_webp
 }
 
 /** S3 — Processing with step-by-step progress (US-06) + cancel confirm (UX-5). */
