@@ -90,7 +90,7 @@ class HistoryStoreTest {
         val outside = File(root.parentFile, "escaped.json")
 
         val error = runCatching {
-            store.save(record("../escaped"))
+            store.save(record("../escaped", createdAt = 0L))
         }.exceptionOrNull()
 
         assertTrue(error is IllegalArgumentException)

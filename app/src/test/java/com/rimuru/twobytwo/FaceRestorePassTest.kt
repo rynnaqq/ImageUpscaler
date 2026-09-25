@@ -44,7 +44,7 @@ class FaceRestorePassTest {
                 val restoredWidth = crop.width / 2
                 val restoredHeight = crop.height / 2
                 return RgbaImage(
-                    ByteArray(restoredWidth * restoredHeight * 4) { index -> if (index % 4 == 3) 0 else 200 },
+                    ByteArray(restoredWidth * restoredHeight * 4) { index -> if (index % 4 == 3) 0.toByte() else 200.toByte() },
                     restoredWidth,
                     restoredHeight,
                 )
@@ -131,7 +131,7 @@ class FaceRestorePassTest {
         }
         val restorer = object : FaceRestorer {
             override fun restore(crop: RgbaImage): RgbaImage = RgbaImage(
-                ByteArray(crop.pixels.size) { index -> if (index % 4 == 3) 0 else 220 },
+                ByteArray(crop.pixels.size) { index -> if (index % 4 == 3) 0.toByte() else 220.toByte() },
                 crop.width,
                 crop.height,
             )
@@ -154,7 +154,7 @@ class FaceRestorePassTest {
         }
         val restorer = object : FaceRestorer {
             override fun restore(crop: RgbaImage): RgbaImage = RgbaImage(
-                ByteArray(crop.pixels.size) { index -> if (index % 4 == 3) 0 else 200 },
+                ByteArray(crop.pixels.size) { index -> if (index % 4 == 3) 0.toByte() else 200.toByte() },
                 crop.width,
                 crop.height,
             )
@@ -230,7 +230,7 @@ class FaceRestorePassTest {
         }
         val restorer = object : FaceRestorer {
             override fun restore(crop: RgbaImage): RgbaImage = RgbaImage(
-                ByteArray(crop.pixels.size) { index -> if (index % 4 == 3) 0 else 210 },
+                ByteArray(crop.pixels.size) { index -> if (index % 4 == 3) 0.toByte() else 210.toByte() },
                 crop.width,
                 crop.height,
             )

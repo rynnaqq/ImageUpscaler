@@ -75,7 +75,7 @@ class FileHistoryStore(private val root: File) : HistoryStore {
 
     private fun <T> withRootLock(block: () -> T): T {
         val monitor = monitorFor(lockKey)
-        synchronized(monitor) {
+        return synchronized(monitor) {
             ensureRoot()
             val channel = FileChannel.open(
                 lockFile.toPath(),
