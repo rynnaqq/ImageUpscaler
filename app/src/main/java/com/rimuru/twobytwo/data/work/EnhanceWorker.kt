@@ -193,7 +193,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                 String(outcomes),
             )
         } finally {
-            engine.close()
+            closeSafely { engine.close() }
         }
     }
 
@@ -266,6 +266,15 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                 error is OutOfMemoryError -> "out of memory"
                 detail != null -> detail
                 else -> error::class.simpleName ?: "Enhancement failed"
+            }
+        }
+
+        internal fun closeSafely(close: () -> Unit) {
+            try {
+                close()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
             }
         }
 
