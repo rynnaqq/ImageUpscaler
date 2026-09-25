@@ -33,10 +33,11 @@ internal fun ensureScratchCapacity(requiredBytes: Long, availableBytes: Long) {
     }
 }
 
-internal fun attachCleanupFailure(primary: Throwable?, cleanup: Throwable?): Throwable? = when {
-    cleanup == null -> null
-    primary == null -> cleanup
-    else -> primary.also { it.addSuppressed(cleanup) }
+internal fun attachCleanupFailure(primary: Throwable?, cleanup: Throwable?): Throwable? {
+    if (cleanup == null) return null
+    if (primary == null) return cleanup
+    primary.addSuppressed(cleanup)
+    return null
 }
 
 /**

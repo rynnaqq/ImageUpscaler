@@ -160,7 +160,7 @@ class LargeOutputExportTest {
         assertFalse(rowExists(name))
         assertFalse(checkNotNull(temporaryFile).exists())
         assertTrue(newArtifacts(STREAM_PREFIX, baseline).isEmpty())
-        assertTrue("export cleanup removed unrelated cache entries", plantedSpool.exists())
+        assertTrue("export cleanup must not remove unrelated cache entries", plantedSpool.exists())
     }
 
     @Test
@@ -193,7 +193,7 @@ class LargeOutputExportTest {
         assertFalse(rowExists(name))
         assertFalse(checkNotNull(temporaryFile).exists())
         assertTrue(newArtifacts(STREAM_PREFIX, baseline).isEmpty())
-        assertTrue("export cleanup removed unrelated cache entries", plantedSpool.exists())
+        assertTrue("export cleanup must not remove unrelated cache entries", plantedSpool.exists())
     }
 
     @Test
