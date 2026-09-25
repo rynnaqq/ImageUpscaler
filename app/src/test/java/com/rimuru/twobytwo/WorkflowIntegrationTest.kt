@@ -12,6 +12,7 @@ import com.rimuru.twobytwo.domain.model.CropPreset
 import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.EnhanceResult
+import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -83,6 +84,10 @@ class WorkflowIntegrationTest {
                 "colorizeStrength",
                 "cropPreset",
                 "cacheLimitBytes",
+                "exportFormat",
+                "jpegQuality",
+                "keepExif",
+                "keepGps",
             ),
             settings.keys().asSequence().toList(),
         )
@@ -131,7 +136,7 @@ class WorkflowIntegrationTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String = "content://media/$destinationUri"
         }
@@ -362,7 +367,7 @@ class WorkflowIntegrationTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String {
                 events += "encode"
@@ -446,7 +451,7 @@ class WorkflowIntegrationTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String {
                 events += "encode:${width}x$height"

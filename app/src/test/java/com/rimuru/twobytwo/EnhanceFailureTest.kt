@@ -3,6 +3,7 @@ package com.rimuru.twobytwo
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
+import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.JobProgress
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
@@ -31,7 +32,7 @@ class EnhanceFailureTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String {
                 if (exifSourceUri == "content://input/first") error("first encode failed")
@@ -74,7 +75,7 @@ class EnhanceFailureTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String = "content://output/$destinationUri"
         }
@@ -112,7 +113,7 @@ class EnhanceFailureTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String = "content://output/$destinationUri"
         }
@@ -146,7 +147,7 @@ class EnhanceFailureTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String = error("encode should not run")
         }
@@ -205,7 +206,7 @@ class EnhanceFailureTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String = error("encode should not run")
         }

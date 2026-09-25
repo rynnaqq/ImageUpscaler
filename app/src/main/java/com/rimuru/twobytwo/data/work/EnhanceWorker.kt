@@ -20,6 +20,7 @@ import com.rimuru.twobytwo.data.engine.OnnxInferenceEngine
 import com.rimuru.twobytwo.data.media.MediaStoreImageIo
 import com.rimuru.twobytwo.domain.model.EnhanceResult
 import com.rimuru.twobytwo.domain.model.JobProgress
+import com.rimuru.twobytwo.domain.model.OutputFormat
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
@@ -34,6 +35,9 @@ internal fun parseScaleFactor(value: Int): ScaleFactor = when (value) {
     8 -> ScaleFactor.X8
     else -> ScaleFactor.X2
 }
+
+internal fun enhanceOutputName(baseName: String, batchIndex: Int, format: OutputFormat): String =
+    "${baseName}_${batchIndex + 1}.${format.fileExtension}"
 
 /**
  * Long-running restore job (PRD §5.7): foreground dataSync worker, progress via
@@ -67,8 +71,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             )
             val flow = useCase.run(
                 request = request,
-                outputNameFor = { index, _ -> "${baseName}_${index + 1}.png" },
-                format = EnhanceImage.OutputFormat.PNG,
+                outputNameFor = { index, _ -> enhanceOutputName(baseName, index, request.exportPolicy.format) },
                 onItemCompleted = { batchIndex, result ->
                     if (result is EnhanceResult.Success) {
                         persistenceService.saveCompletedItem(

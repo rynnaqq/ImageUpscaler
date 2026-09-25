@@ -12,6 +12,7 @@ import com.rimuru.twobytwo.domain.engine.RgbaImage
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
+import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
@@ -248,7 +249,7 @@ class FaceRestorePassTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String {
                 encodedWidth = width

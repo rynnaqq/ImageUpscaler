@@ -5,6 +5,7 @@ import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
+import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.JobProgress
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
@@ -91,7 +92,7 @@ class BatchQueueTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String = "content://output/$destinationUri"
         }
@@ -148,7 +149,7 @@ class BatchQueueTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String {
                 encodeCount++

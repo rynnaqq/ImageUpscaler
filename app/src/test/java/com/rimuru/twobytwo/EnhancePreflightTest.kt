@@ -3,6 +3,7 @@ package com.rimuru.twobytwo
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
+import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
 import kotlinx.coroutines.flow.toList
@@ -31,7 +32,7 @@ class EnhancePreflightTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String {
                 encodeCalled = true
@@ -78,7 +79,7 @@ class EnhancePreflightTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String = error("encode should not run")
         }
@@ -122,7 +123,7 @@ class EnhancePreflightTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String = error("encode should not run")
         }

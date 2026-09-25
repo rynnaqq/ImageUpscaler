@@ -4,6 +4,7 @@ import com.rimuru.twobytwo.data.work.parseScaleFactor
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
+import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
 import kotlinx.coroutines.flow.toList
@@ -59,7 +60,7 @@ class EnhanceScaleTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String {
                 encodedDimensions = EnhanceImage.Dimensions(width, height)

@@ -5,6 +5,8 @@ import com.rimuru.twobytwo.domain.model.CropPreset
 import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.EngineMode
+import com.rimuru.twobytwo.domain.model.ExportPolicy
+import com.rimuru.twobytwo.domain.model.OutputFormat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.math.BigDecimal
@@ -45,6 +47,7 @@ internal object EnhanceRequestJson {
                 colorizeStrength = o.optInt("colorizeStrength", 50),
                 cropPreset = parseCropPreset(o),
                 cacheLimitBytes = parseCacheLimit(o),
+                exportPolicy = parseExportPolicy(o),
             )
         }.getOrNull()
     }
@@ -66,6 +69,10 @@ internal object EnhanceRequestJson {
         json.put("colorizeStrength", request.colorizeStrength)
         json.put("cropPreset", request.cropPreset?.name ?: JSONObject.NULL)
         json.put("cacheLimitBytes", request.cacheLimitBytes)
+        json.put("exportFormat", request.exportPolicy.format.name)
+        json.put("jpegQuality", request.exportPolicy.jpegQuality)
+        json.put("keepExif", request.exportPolicy.keepExif)
+        json.put("keepGps", request.exportPolicy.keepGps)
     }
 
     private fun parseCropPreset(json: JSONObject): CropPreset? {
@@ -94,5 +101,41 @@ internal object EnhanceRequestJson {
             "cache limit out of range: $limit"
         }
         return limit
+    }
+
+    private fun parseExportPolicy(json: JSONObject): ExportPolicy = ExportPolicy(
+        format = parseOutputFormat(json),
+        jpegQuality = parseJpegQuality(json),
+        keepExif = parseBoolean(json, "keepExif", true),
+        keepGps = parseBoolean(json, "keepGps", false),
+    )
+
+    private fun parseOutputFormat(json: JSONObject): OutputFormat {
+        if (!json.has("exportFormat") || json.isNull("exportFormat")) return OutputFormat.PNG
+        val name = json.opt("exportFormat") as? String
+            ?: throw IllegalArgumentException("export format must be a string")
+        return OutputFormat.entries.firstOrNull { it.name == name }
+            ?: throw IllegalArgumentException("unknown export format: $name")
+    }
+
+    private fun parseJpegQuality(json: JSONObject): Int {
+        if (!json.has("jpegQuality") || json.isNull("jpegQuality")) return 97
+        val value = json.opt("jpegQuality") as? Number
+            ?: throw IllegalArgumentException("JPEG quality must be a number")
+        val integer = when (value) {
+            is BigInteger -> value
+            is BigDecimal -> value.toBigIntegerExact()
+            else -> BigDecimal(value.toString()).toBigIntegerExact()
+        }
+        return integer.coerceIn(
+            BigInteger.valueOf(Int.MIN_VALUE.toLong()),
+            BigInteger.valueOf(Int.MAX_VALUE.toLong()),
+        ).toInt()
+    }
+
+    private fun parseBoolean(json: JSONObject, key: String, default: Boolean): Boolean {
+        if (!json.has(key) || json.isNull(key)) return default
+        return json.opt(key) as? Boolean
+            ?: throw IllegalArgumentException("$key must be a boolean")
     }
 }

@@ -22,6 +22,23 @@ enum class Accelerator {
     CPU;
 }
 
+enum class OutputFormat(val mimeType: String, val fileExtension: String) {
+    PNG("image/png", "png"),
+    JPEG("image/jpeg", "jpg"),
+    WEBP("image/webp", "webp"),
+}
+
+data class ExportPolicy(
+    val format: OutputFormat = OutputFormat.PNG,
+    val jpegQuality: Int = 97,
+    val keepExif: Boolean = true,
+    val keepGps: Boolean = false,
+) {
+    val effectiveJpegQuality: Int get() = jpegQuality.coerceIn(80, 100)
+    val encoderQuality: Int
+        get() = if (format == OutputFormat.JPEG) effectiveJpegQuality else 100
+}
+
 /** Denoise strength 0..100; presets are anchor points (FR-3.1). */
 data class DenoiseStrength(val percent: Int) {
     init {
@@ -76,6 +93,7 @@ data class EnhanceRequest(
     val colorizeStrength: Int = 50,
     val cropPreset: CropPreset? = null,
     val cacheLimitBytes: Long = DEFAULT_CACHE_LIMIT_BYTES,
+    val exportPolicy: ExportPolicy = ExportPolicy(),
 ) {
     init {
         require(faceRestoreStrength in 0..100) {

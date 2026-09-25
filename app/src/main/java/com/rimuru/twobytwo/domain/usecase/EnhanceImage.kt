@@ -19,6 +19,7 @@ import com.rimuru.twobytwo.domain.engine.TilingManager
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.EnhanceResult
 import com.rimuru.twobytwo.domain.model.EngineMode
+import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.JobProgress
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import kotlinx.coroutines.Dispatchers
@@ -56,7 +57,7 @@ class EnhanceImage(
             width: Int,
             height: Int,
             destinationUri: String,
-            format: OutputFormat,
+            policy: ExportPolicy,
             exifSourceUri: String?,
         ): String
     }
@@ -66,8 +67,6 @@ class EnhanceImage(
     }
 
     data class Dimensions(val width: Int, val height: Int)
-
-    enum class OutputFormat { PNG, JPEG }
 
     data class TileConfig(val tileSize: Int = 256)
 
@@ -111,7 +110,6 @@ class EnhanceImage(
     fun run(
         request: EnhanceRequest,
         outputNameFor: (index: Int, inputUri: String) -> String,
-        format: OutputFormat = OutputFormat.PNG,
         maxMegapixels: Int = 48,
         sharpenMaxMegapixels: Double = 24.0,
         isCancelled: () -> Boolean = { false },
@@ -141,7 +139,6 @@ class EnhanceImage(
                         request = request,
                         inputUri = inputUri,
                         outputUri = outputNameFor(batchIndex, inputUri),
-                        format = format,
                         maxMegapixels = maxMegapixels,
                         sharpenOutput = request.sharpen,
                         sharpenMaxMegapixels = sharpenMaxMegapixels,
@@ -222,7 +219,6 @@ class EnhanceImage(
         request: EnhanceRequest,
         inputUri: String,
         outputUri: String,
-        format: OutputFormat,
         maxMegapixels: Int,
         sharpenOutput: Boolean,
         sharpenMaxMegapixels: Double,
@@ -426,7 +422,14 @@ class EnhanceImage(
             ),
         )
         checkPassCancellation(cancellationRequested)
-        val encodedUri = imageIo.encode(out, tiling.outWidth, tiling.outHeight, outputUri, format, inputUri)
+        val encodedUri = imageIo.encode(
+            out,
+            tiling.outWidth,
+            tiling.outHeight,
+            outputUri,
+            request.exportPolicy,
+            inputUri,
+        )
         require(encodedUri.isNotBlank()) { "encode returned a blank output URI" }
         return ProcessedImage(
             outputUri = encodedUri,

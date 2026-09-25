@@ -11,6 +11,7 @@ import com.rimuru.twobytwo.domain.engine.ScratchRepairPass
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
+import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.toList
@@ -243,7 +244,7 @@ class ScratchColorPassTest {
                 width: Int,
                 height: Int,
                 destinationUri: String,
-                format: EnhanceImage.OutputFormat,
+                policy: ExportPolicy,
                 exifSourceUri: String?,
             ): String = "content://output/$destinationUri"
         }

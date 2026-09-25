@@ -8,8 +8,9 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import androidx.exifinterface.media.ExifInterface
+import com.rimuru.twobytwo.domain.model.ExportPolicy
+import com.rimuru.twobytwo.domain.model.OutputFormat
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
-import java.io.InputStream
 
 /**
  * Scoped-storage image I/O (PRD §5.2): decode picked content:// to RGBA, encode
@@ -74,17 +75,46 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo {
         width: Int,
         height: Int,
         destinationUri: String,
-        format: EnhanceImage.OutputFormat,
+        policy: ExportPolicy,
         exifSourceUri: String?,
     ): String {
         val resolver = context.contentResolver
-        val (mime, jpgQuality) = when (format) {
-            EnhanceImage.OutputFormat.PNG -> "image/png" to 100
-            EnhanceImage.OutputFormat.JPEG -> "image/jpeg" to 97 // PRD: q >= 95
+        val compressionFormat = when (policy.format) {
+            OutputFormat.PNG -> Bitmap.CompressFormat.PNG
+            OutputFormat.JPEG -> Bitmap.CompressFormat.JPEG
+            OutputFormat.WEBP -> if (Build.VERSION.SDK_INT >= 30) {
+                Bitmap.CompressFormat.WEBP_LOSSLESS
+            } else {
+                Bitmap.CompressFormat.WEBP
+            }
+        }
+        val quality = policy.encoderQuality
+        val metadataTags = buildList {
+            if (policy.keepExif) {
+                addAll(
+                    listOf(
+                        ExifInterface.TAG_DATETIME_ORIGINAL,
+                        ExifInterface.TAG_MAKE,
+                        ExifInterface.TAG_MODEL,
+                    ),
+                )
+            }
+            if (policy.keepGps) {
+                addAll(
+                    listOf(
+                        ExifInterface.TAG_GPS_LATITUDE,
+                        ExifInterface.TAG_GPS_LATITUDE_REF,
+                        ExifInterface.TAG_GPS_LONGITUDE,
+                        ExifInterface.TAG_GPS_LONGITUDE_REF,
+                        ExifInterface.TAG_GPS_ALTITUDE,
+                        ExifInterface.TAG_GPS_ALTITUDE_REF,
+                    ),
+                )
+            }
         }
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, destinationUri)
-            put(MediaStore.Images.Media.MIME_TYPE, mime)
+            put(MediaStore.Images.Media.MIME_TYPE, policy.format.mimeType)
             if (Build.VERSION.SDK_INT >= 29) {
                 put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Rimuru2x")
                 put(MediaStore.Images.Media.IS_PENDING, 1)
@@ -96,44 +126,27 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo {
             val outUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
                 ?: error("MediaStore insert failed")
             insertedUri = outUri
-            java.nio.ByteBuffer.wrap(rgba).rewind()
             bitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(rgba))
 
             resolver.openOutputStream(outUri)!!.use { os ->
-                check(
-                    bitmap.compress(
-                        if (format == EnhanceImage.OutputFormat.PNG) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG,
-                        jpgQuality,
-                        os,
-                    ),
-                ) { "image compression failed" }
+                check(bitmap.compress(compressionFormat, quality, os)) { "image compression failed" }
             }
 
-            // Copy capture metadata from the source photo (US-08). Output orientation is
-            // already baked in at decode time, so orientation is deliberately not copied.
-            if (exifSourceUri != null) {
-                try {
-                    val srcExif = resolver.openInputStream(Uri.parse(exifSourceUri))!!.use { input ->
-                        ExifInterface(input)
-                    }
-                    val pfd = resolver.openFileDescriptor(outUri, "rw")
-                    if (pfd != null) {
-                        pfd.use {
-                            val outExif = ExifInterface(it.fileDescriptor)
-                            val tags = listOf(
-                                ExifInterface.TAG_DATETIME_ORIGINAL,
-                                ExifInterface.TAG_MAKE,
-                                ExifInterface.TAG_MODEL,
-                            )
-                            for (tag in tags) {
-                                val value = srcExif.getAttribute(tag)
-                                if (value != null) outExif.setAttribute(tag, value)
-                            }
-                            outExif.saveAttributes()
+            if (metadataTags.isNotEmpty()) {
+                val sourceUri = exifSourceUri ?: error("EXIF source URI is required")
+                val sourceExif = resolver.openInputStream(Uri.parse(sourceUri))!!.use { input ->
+                    ExifInterface(input)
+                }
+                val pfd = resolver.openFileDescriptor(outUri, "rw")
+                    ?: error("MediaStore output descriptor unavailable")
+                pfd.use {
+                    val destinationExif = ExifInterface(it.fileDescriptor)
+                    metadataTags.forEach { tag ->
+                        sourceExif.getAttribute(tag)?.let { value ->
+                            destinationExif.setAttribute(tag, value)
                         }
                     }
-                } catch (_: Exception) {
-                    // Metadata loss is non-fatal; image already saved.
+                    destinationExif.saveAttributes()
                 }
             }
 
