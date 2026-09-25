@@ -33,6 +33,12 @@ internal fun ensureScratchCapacity(requiredBytes: Long, availableBytes: Long) {
     }
 }
 
+internal fun attachCleanupFailure(primary: Throwable?, cleanup: Throwable?): Throwable? = when {
+    cleanup == null -> null
+    primary == null -> cleanup
+    else -> primary.also { it.addSuppressed(cleanup) }
+}
+
 /**
  * Scoped-storage image I/O (PRD §5.2): decode picked content:// to RGBA, encode
  * PNG/JPEG(q=97) into MediaStore, copy Exif orientation/timestamps (US-08).
@@ -197,17 +203,12 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo, St
             val rowFailure = insertedUri?.let { uri ->
                 runCatching { resolver.delete(uri, null, null) }.exceptionOrNull()
             }
-            if (rowFailure != null) {
-                t.addSuppressed(rowFailure)
-            }
+            attachCleanupFailure(t, rowFailure)
             throw t
         } finally {
-            val temporaryFailure = deleteTemporaryFile(temporaryFile)
-            val failure = processingFailure
-            when {
-                temporaryFailure == null -> Unit
-                failure == null -> throw temporaryFailure
-                else -> failure.addSuppressed(temporaryFailure)
+            val surfaced = attachCleanupFailure(processingFailure, deleteTemporaryFile(temporaryFile))
+            if (surfaced != null) {
+                throw surfaced
             }
         }
     }

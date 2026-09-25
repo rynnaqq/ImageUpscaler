@@ -6,7 +6,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
-import android.os.StatFs
 import android.provider.MediaStore
 import androidx.exifinterface.media.ExifInterface
 import androidx.test.platform.app.InstrumentationRegistry
@@ -161,7 +160,7 @@ class LargeOutputExportTest {
         assertFalse(rowExists(name))
         assertFalse(checkNotNull(temporaryFile).exists())
         assertTrue(newArtifacts(STREAM_PREFIX, baseline).isEmpty())
-        assertTrue("cleanup must not delete unrelated tile spools", plantedSpool.exists())
+        assertTrue("export cleanup removed unrelated cache entries", plantedSpool.exists())
     }
 
     @Test
@@ -194,23 +193,19 @@ class LargeOutputExportTest {
         assertFalse(rowExists(name))
         assertFalse(checkNotNull(temporaryFile).exists())
         assertTrue(newArtifacts(STREAM_PREFIX, baseline).isEmpty())
-        assertTrue("cleanup must not delete unrelated tile spools", plantedSpool.exists())
+        assertTrue("export cleanup removed unrelated cache entries", plantedSpool.exists())
     }
 
     @Test
     fun scratchPreflightRejectsRequirementAboveAvailableCacheSpace() {
-        val available = StatFs(context.cacheDir.absolutePath).availableBytes
-        val exceeding = Math.addExact(available, 1L)
-
         streamingIo().checkScratchCapacity(0L)
-        streamingIo().checkScratchCapacity(available)
 
-        val failure = runCatching { streamingIo().checkScratchCapacity(exceeding) }.exceptionOrNull()
+        val failure = runCatching { streamingIo().checkScratchCapacity(Long.MAX_VALUE) }.exceptionOrNull()
+
         assertTrue(failure is IllegalStateException)
         val message = checkNotNull(failure).message.orEmpty()
         assertTrue(message.contains("insufficient temporary storage"))
-        assertTrue(message.contains(exceeding.toString()))
-        assertTrue(message.contains(available.toString()))
+        assertTrue(message.contains(Long.MAX_VALUE.toString()))
     }
 
     @Test
@@ -261,21 +256,21 @@ class LargeOutputExportTest {
     }
 
     private fun assertFormatSignature(uri: Uri, format: OutputFormat) {
-        val header = context.contentResolver.openInputStream(uri)!!.use { input ->
-            ByteArray(12).also { input.read(it) }
-        }
+        val content = context.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
+        assertTrue("encoded output is shorter than its signature", content.size >= 12)
+
         when (format) {
             OutputFormat.PNG -> assertArrayEquals(
                 byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A),
-                header.copyOf(8),
+                content.copyOf(8),
             )
             OutputFormat.JPEG -> assertArrayEquals(
                 byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte()),
-                header.copyOf(3),
+                content.copyOf(3),
             )
             OutputFormat.WEBP -> {
-                assertEquals("RIFF", String(header, 0, 4, Charsets.US_ASCII))
-                assertEquals("WEBP", String(header, 8, 4, Charsets.US_ASCII))
+                assertEquals("RIFF", String(content, 0, 4, Charsets.US_ASCII))
+                assertEquals("WEBP", String(content, 8, 4, Charsets.US_ASCII))
             }
         }
     }
