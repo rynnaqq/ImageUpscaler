@@ -59,6 +59,7 @@ dependencies {
     implementation(libs.androidx.exifinterface)
     implementation(libs.coil.compose)
     implementation(libs.onnx.runtime.android)
+    implementation(libs.spectrum.default)
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
     androidTestImplementation(libs.androidx.test.runner)
