@@ -177,7 +177,13 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         } catch (e: CancellationException) {
             throw e
         } catch (e: OutOfMemoryError) {
-            throw e
+            return failure(
+                terminalFailureMessage(e),
+                lastBackend,
+                last?.batchIndex,
+                last?.batchTotal,
+                String(outcomes),
+            )
         } catch (t: Throwable) {
             return failure(
                 t.message,
@@ -253,6 +259,16 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
     }
 
     companion object {
+        internal fun terminalFailureMessage(error: Throwable): String {
+            val detail = error.message?.takeIf { it.isNotBlank() }
+            return when {
+                error is OutOfMemoryError && detail != null -> "out of memory: $detail"
+                error is OutOfMemoryError -> "out of memory"
+                detail != null -> detail
+                else -> error::class.simpleName ?: "Enhancement failed"
+            }
+        }
+
         const val KEY_REQUEST = "request"
         const val KEY_OUTPUT_NAME = "outputName"
         const val KEY_STEP = "step"
