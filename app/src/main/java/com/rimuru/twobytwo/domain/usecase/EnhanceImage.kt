@@ -125,14 +125,22 @@ class EnhanceImage(
             require(groups.all { it.startY >= 0L && it.startY < it.endY && it.endY <= outputHeight }) {
                 "streaming tile plan exceeds output dimensions"
             }
+            require(
+                groups.zipWithNext().all { (previous, next) ->
+                    previous.startY <= next.startY && previous.endY <= next.endY
+                },
+            ) {
+                "streaming tile rows are not ordered"
+            }
             var maxSpoolBytes = 0L
-            groups.forEach { candidate ->
-                var activeBytes = 0L
-                groups.forEach { group ->
-                    if (group.startY <= candidate.startY && candidate.startY < group.endY) {
-                        activeBytes = Math.addExact(activeBytes, group.bytes)
-                    }
+            var activeBytes = 0L
+            var nextEndingGroup = 0
+            groups.forEach { group ->
+                while (nextEndingGroup < groups.size && groups[nextEndingGroup].endY <= group.startY) {
+                    activeBytes = Math.subtractExact(activeBytes, groups[nextEndingGroup].bytes)
+                    nextEndingGroup++
                 }
+                activeBytes = Math.addExact(activeBytes, group.bytes)
                 maxSpoolBytes = maxOf(maxSpoolBytes, activeBytes)
             }
             val pngBytes = Math.multiplyExact(

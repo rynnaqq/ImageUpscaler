@@ -23,6 +23,31 @@ class StreamingScratchBudgetTest {
     }
 
     @Test
+    fun `tall input sweeps tens of thousands of row groups`() {
+        val inputHeight = 16_000_000
+        val tiling = TilingManager(
+            imageWidth = 1,
+            imageHeight = inputHeight,
+            scale = 4,
+            tileSize = 256,
+            overlap = 24,
+        )
+        val tiles = tiling.tiles()
+        assertTrue(tiling.tilesY >= 60_000)
+
+        val required = EnhanceImage.streamingScratchBytes(
+            tiles = tiles,
+            scale = tiling.scale,
+            outputWidth = tiling.outWidth.toLong(),
+            outputHeight = tiling.outHeight.toLong(),
+        )
+        val pngBound = tiling.outWidth.toLong() * tiling.outHeight * 5L
+        val overlappingRaw = 2L * tiling.tileSize * tiling.scale * tiling.tileSize * tiling.scale * 4L
+
+        assertTrue(required >= pngBound + overlappingRaw)
+    }
+
+    @Test
     fun `scratch budget rejects invalid dimensions`() {
         val tiling = TilingManager(70, 66, scale = 4, tileSize = 32, overlap = 8)
         val tiles = tiling.tiles()
