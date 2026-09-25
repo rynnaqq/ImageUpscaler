@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
+import android.os.StatFs
 import android.provider.MediaStore
 import androidx.exifinterface.media.ExifInterface
 import androidx.test.platform.app.InstrumentationRegistry
@@ -81,6 +82,7 @@ class LargeOutputExportTest {
             }
             assertEquals(width, options.outWidth)
             assertEquals(height, options.outHeight)
+            assertFormatSignature(uri, format)
             assertOutput(uri, format, name)
         }
     }
@@ -127,8 +129,9 @@ class LargeOutputExportTest {
 
     @Test
     fun transcodeFailureRemovesPendingRowAndTemporaryFile() = runBlocking {
-        val existingFiles = context.cacheDir.listFiles()?.toSet().orEmpty()
         val name = trackName("streaming-failure.jpg")
+        val baseline = artifactNames(STREAM_PREFIX)
+        val plantedSpool = plantTileSpool()
         var temporaryFile: File? = null
         val result = runCatching {
             streamingIo().encodeStreaming(
@@ -139,11 +142,12 @@ class LargeOutputExportTest {
                 exifSourceUri = null,
             ) { row ->
                 if (temporaryFile == null) {
-                    val created = context.cacheDir.listFiles()!!.single { it !in existingFiles }
-                    temporaryFile = created
-                    temporaryFiles += created
+                    val created = newArtifacts(STREAM_PREFIX, baseline)
+                    assertTrue("streaming temporary file was not created", created.isNotEmpty())
+                    temporaryFile = created.first()
+                    temporaryFiles += checkNotNull(temporaryFile)
                     if (Build.VERSION.SDK_INT >= 29) assertTrue(rowIsPending(name))
-                    RandomAccessFile(created, "rw").use { output ->
+                    RandomAccessFile(checkNotNull(temporaryFile), "rw").use { output ->
                         output.seek(1)
                         output.write(ByteArray(7))
                     }
@@ -156,12 +160,15 @@ class LargeOutputExportTest {
         assertTrue(result.exceptionOrNull() is SpectrumException)
         assertFalse(rowExists(name))
         assertFalse(checkNotNull(temporaryFile).exists())
+        assertTrue(newArtifacts(STREAM_PREFIX, baseline).isEmpty())
+        assertTrue("cleanup must not delete unrelated tile spools", plantedSpool.exists())
     }
 
     @Test
     fun cancellationDuringRowProductionRemovesPendingRowAndTemporaryFile() = runBlocking {
-        val existingFiles = context.cacheDir.listFiles()?.toSet().orEmpty()
         val name = trackName("streaming-cancellation.jpg")
+        val baseline = artifactNames(STREAM_PREFIX)
+        val plantedSpool = plantTileSpool()
         var temporaryFile: File? = null
         val export = async {
             streamingIo().encodeStreaming(
@@ -171,9 +178,10 @@ class LargeOutputExportTest {
                 policy = ExportPolicy(format = OutputFormat.JPEG, keepExif = false),
                 exifSourceUri = null,
             ) { row ->
-                val created = context.cacheDir.listFiles()!!.single { it !in existingFiles }
-                temporaryFile = created
-                temporaryFiles += created
+                val created = newArtifacts(STREAM_PREFIX, baseline)
+                assertTrue("streaming temporary file was not created", created.isNotEmpty())
+                temporaryFile = created.first()
+                temporaryFiles += checkNotNull(temporaryFile)
                 row.fill(0x7F)
                 row[3] = 0xFF.toByte()
                 currentCoroutineContext()[Job]!!.cancel(CancellationException("cancelled during row production"))
@@ -185,6 +193,24 @@ class LargeOutputExportTest {
         assertTrue(error is CancellationException)
         assertFalse(rowExists(name))
         assertFalse(checkNotNull(temporaryFile).exists())
+        assertTrue(newArtifacts(STREAM_PREFIX, baseline).isEmpty())
+        assertTrue("cleanup must not delete unrelated tile spools", plantedSpool.exists())
+    }
+
+    @Test
+    fun scratchPreflightRejectsRequirementAboveAvailableCacheSpace() {
+        val available = StatFs(context.cacheDir.absolutePath).availableBytes
+        val exceeding = Math.addExact(available, 1L)
+
+        streamingIo().checkScratchCapacity(0L)
+        streamingIo().checkScratchCapacity(available)
+
+        val failure = runCatching { streamingIo().checkScratchCapacity(exceeding) }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        val message = checkNotNull(failure).message.orEmpty()
+        assertTrue(message.contains("insufficient temporary storage"))
+        assertTrue(message.contains(exceeding.toString()))
+        assertTrue(message.contains(available.toString()))
     }
 
     @Test
@@ -217,6 +243,42 @@ class LargeOutputExportTest {
     }
 
     private fun streamingIo(): StreamingImageIo = MediaStoreImageIo(context)
+
+    private fun artifactNames(prefix: String): Set<String> =
+        context.cacheDir.listFiles().orEmpty()
+            .filter { it.name.startsWith(prefix) }
+            .mapTo(mutableSetOf()) { it.name }
+
+    private fun newArtifacts(prefix: String, baseline: Set<String>): List<File> =
+        context.cacheDir.listFiles().orEmpty()
+            .filter { it.name.startsWith(prefix) && it.name !in baseline }
+
+    private fun plantTileSpool(): File {
+        val spool = File(context.cacheDir, "${TILE_PREFIX}${UUID.randomUUID()}.rgba")
+        spool.writeBytes(ByteArray(0))
+        temporaryFiles += spool
+        return spool
+    }
+
+    private fun assertFormatSignature(uri: Uri, format: OutputFormat) {
+        val header = context.contentResolver.openInputStream(uri)!!.use { input ->
+            ByteArray(12).also { input.read(it) }
+        }
+        when (format) {
+            OutputFormat.PNG -> assertArrayEquals(
+                byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A),
+                header.copyOf(8),
+            )
+            OutputFormat.JPEG -> assertArrayEquals(
+                byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte()),
+                header.copyOf(3),
+            )
+            OutputFormat.WEBP -> {
+                assertEquals("RIFF", String(header, 0, 4, Charsets.US_ASCII))
+                assertEquals("WEBP", String(header, 8, 4, Charsets.US_ASCII))
+            }
+        }
+    }
 
     private fun writePattern(row: ByteArray, rowIndex: Int) {
         var x = 0
@@ -298,6 +360,8 @@ class LargeOutputExportTest {
     }
 
     private companion object {
+        const val STREAM_PREFIX = "rimuru2x_stream_"
+        const val TILE_PREFIX = "rimuru2x_tiles_"
         val GPS_TAGS = listOf(
             ExifInterface.TAG_GPS_LATITUDE,
             ExifInterface.TAG_GPS_LATITUDE_REF,

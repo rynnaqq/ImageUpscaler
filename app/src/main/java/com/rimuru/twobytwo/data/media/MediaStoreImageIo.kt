@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
+import android.os.StatFs
 import android.provider.MediaStore
 import androidx.exifinterface.media.ExifInterface
 import com.facebook.spectrum.DefaultPlugins
@@ -25,6 +26,12 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+
+internal fun ensureScratchCapacity(requiredBytes: Long, availableBytes: Long) {
+    check(availableBytes >= requiredBytes) {
+        "insufficient temporary storage: need $requiredBytes bytes, have $availableBytes bytes"
+    }
+}
 
 /**
  * Scoped-storage image I/O (PRD §5.2): decode picked content:// to RGBA, encode
@@ -127,6 +134,10 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo, St
         }
     }
 
+    override fun checkScratchCapacity(requiredBytes: Long) {
+        ensureScratchCapacity(requiredBytes, StatFs(context.cacheDir.absolutePath).availableBytes)
+    }
+
     override suspend fun encodeStreaming(
         width: Int,
         height: Int,
@@ -141,6 +152,7 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo, St
         val values = outputValues(destinationUri, policy)
         val temporaryFile = File.createTempFile("rimuru2x_stream_", ".png", context.cacheDir)
         var insertedUri: Uri? = null
+        var processingFailure: Throwable? = null
         try {
             val outUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
                 ?: error("MediaStore insert failed")
@@ -181,11 +193,29 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo, St
             currentCoroutineContext().ensureActive()
             return outUri.toString()
         } catch (t: Throwable) {
-            insertedUri?.let { uri -> runCatching { resolver.delete(uri, null, null) } }
+            processingFailure = t
+            val rowFailure = insertedUri?.let { uri ->
+                runCatching { resolver.delete(uri, null, null) }.exceptionOrNull()
+            }
+            if (rowFailure != null) {
+                t.addSuppressed(rowFailure)
+            }
             throw t
         } finally {
-            temporaryFile.delete()
+            val temporaryFailure = deleteTemporaryFile(temporaryFile)
+            val failure = processingFailure
+            when {
+                temporaryFailure == null -> Unit
+                failure == null -> throw temporaryFailure
+                else -> failure.addSuppressed(temporaryFailure)
+            }
         }
+    }
+
+    private fun deleteTemporaryFile(file: File): Throwable? = when {
+        !file.exists() -> null
+        file.delete() -> null
+        else -> IllegalStateException("failed to delete temporary file: ${file.absolutePath}")
     }
 
     private fun streamingRequirement(policy: ExportPolicy): EncodeRequirement {
