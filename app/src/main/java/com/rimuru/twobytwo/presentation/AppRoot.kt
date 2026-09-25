@@ -100,6 +100,7 @@ import coil.compose.AsyncImage
 import com.rimuru.twobytwo.R
 import com.rimuru.twobytwo.data.history.HistoryRecord
 import com.rimuru.twobytwo.domain.model.Accelerator
+import com.rimuru.twobytwo.domain.model.CropPreset
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.EngineMode
 import com.rimuru.twobytwo.domain.model.ModelProfile
@@ -574,6 +575,73 @@ fun ConfigScreen(
         }
 
         FeatureRow(
+            icon = Icons.Filled.PhotoLibrary,
+            title = stringResource(R.string.config_crop_preset),
+            description = stringResource(R.string.config_crop_preset_desc),
+        ) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val presets = listOf<CropPreset?>(null) + CropPreset.entries
+                presets.forEach { preset ->
+                    val label = stringResource(cropLabel(preset))
+                    val selected = state.cropPreset == preset
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onIntent(EnhanceViewModel.Intent.SetCropPreset(preset)) },
+                        label = { Text(label) },
+                        modifier = Modifier.semantics {
+                            contentDescription = label
+                            stateDescription = if (selected) selectedState else availableState
+                        },
+                    )
+                }
+            }
+        }
+
+        RestorationFeature(
+            icon = Icons.Filled.Texture,
+            title = stringResource(R.string.config_sharpen),
+            description = stringResource(R.string.config_sharpen_desc),
+            enabled = state.sharpen,
+            strengthLabel = null,
+            strength = 0,
+            onEnabledChange = { onIntent(EnhanceViewModel.Intent.SetSharpen(it)) },
+            onStrengthChange = {},
+        )
+        RestorationFeature(
+            icon = Icons.Filled.AutoAwesome,
+            title = stringResource(R.string.config_deblur),
+            description = stringResource(R.string.config_deblur_desc),
+            enabled = state.deblurEnabled,
+            strengthLabel = stringResource(R.string.config_deblur_strength),
+            strength = state.deblurStrength,
+            onEnabledChange = { onIntent(EnhanceViewModel.Intent.SetDeblur(it)) },
+            onStrengthChange = { onIntent(EnhanceViewModel.Intent.SetDeblurStrength(it)) },
+        )
+        RestorationFeature(
+            icon = Icons.Filled.Texture,
+            title = stringResource(R.string.config_scratch_repair),
+            description = stringResource(R.string.config_scratch_repair_desc),
+            enabled = state.scratchRepairEnabled,
+            strengthLabel = stringResource(R.string.config_scratch_repair_strength),
+            strength = state.scratchRepairStrength,
+            onEnabledChange = { onIntent(EnhanceViewModel.Intent.SetScratchRepair(it)) },
+            onStrengthChange = { onIntent(EnhanceViewModel.Intent.SetScratchRepairStrength(it)) },
+        )
+        RestorationFeature(
+            icon = Icons.Filled.AutoAwesome,
+            title = stringResource(R.string.config_colorize),
+            description = stringResource(R.string.config_colorize_desc),
+            enabled = state.colorizeEnabled,
+            strengthLabel = stringResource(R.string.config_colorize_strength),
+            strength = state.colorizeStrength,
+            onEnabledChange = { onIntent(EnhanceViewModel.Intent.SetColorize(it)) },
+            onStrengthChange = { onIntent(EnhanceViewModel.Intent.SetColorizeStrength(it)) },
+        )
+
+        FeatureRow(
             icon = Icons.Filled.AutoAwesome,
             title = stringResource(R.string.config_model_profile),
             description = stringResource(R.string.config_model_profile_desc),
@@ -867,6 +935,67 @@ private fun FeatureRow(
         }
         content()
     }
+}
+
+@Composable
+private fun RestorationFeature(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    enabled: Boolean,
+    strengthLabel: String?,
+    strength: Int,
+    onEnabledChange: (Boolean) -> Unit,
+    onStrengthChange: (Int) -> Unit,
+) {
+    FeatureRow(icon = icon, title = title, description = description) {
+        val stateLabel = stringResource(
+            if (enabled) R.string.config_control_on else R.string.config_control_off,
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (strengthLabel != null) {
+                Text(
+                    strengthLabel,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = onEnabledChange,
+                modifier = Modifier.semantics {
+                    contentDescription = title
+                    stateDescription = stateLabel
+                },
+            )
+        }
+        if (enabled && strengthLabel != null) {
+            val valueLabel = stringResource(R.string.export_quality_value, strength)
+            Slider(
+                value = strength.toFloat(),
+                onValueChange = { onStrengthChange(it.roundToInt()) },
+                valueRange = 0f..100f,
+                modifier = Modifier.semantics {
+                    contentDescription = strengthLabel
+                    stateDescription = valueLabel
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun cropLabel(preset: CropPreset?): Int = when (preset) {
+    null -> R.string.config_crop_none
+    CropPreset.SQUARE -> R.string.config_crop_square
+    CropPreset.PORTRAIT_9_16 -> R.string.config_crop_portrait_9_16
+    CropPreset.PORTRAIT_4_5 -> R.string.config_crop_portrait_4_5
+    CropPreset.PRINT_4_6 -> R.string.config_crop_print_4_6
+    CropPreset.PRINT_8_10 -> R.string.config_crop_print_8_10
 }
 
 @Composable

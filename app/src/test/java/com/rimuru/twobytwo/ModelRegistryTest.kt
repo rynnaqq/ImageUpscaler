@@ -5,6 +5,9 @@ import com.rimuru.twobytwo.data.engine.ModelRegistry
 import com.rimuru.twobytwo.data.engine.OnnxInferenceEngine
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.engine.ModelProvider
+import com.rimuru.twobytwo.domain.model.Accelerator
+import com.rimuru.twobytwo.domain.model.EnhanceRequest
+import com.rimuru.twobytwo.domain.model.modelProfile
 import kotlinx.coroutines.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -93,6 +96,45 @@ class ModelRegistryTest {
 
         assertEquals(0, environmentRequests)
         assertTrue(engine.backendName.contains("fallback"))
+    }
+
+    @Test
+    fun `fast request bypasses model loading and uses the classical path`() {
+        var providerLoads = 0
+        var environmentRequests = 0
+        val provider = object : ModelProvider {
+            override fun load(key: InferenceEngine.ModelKey): com.rimuru.twobytwo.domain.engine.ModelHandle? {
+                providerLoads++
+                return null
+            }
+        }
+        val request = EnhanceRequest(
+            inputUris = listOf("content://input/fast"),
+            useNeuralEngine = false,
+            accelerator = Accelerator.GPU,
+        )
+        val engine = OnnxInferenceEngine(
+            modelProvider = provider,
+            environmentFactory = {
+                environmentRequests++
+                error("ONNX environment must stay lazy")
+            },
+        )
+            .withProfile(request.modelProfile)
+            .withAccelerator(request.accelerator)
+
+        val output = engine.upscaleTile(
+            FloatArray(3),
+            1,
+            1,
+            InferenceEngine.ModelKey.CREATIVE_X2,
+        )
+
+        assertEquals(0, providerLoads)
+        assertEquals(0, environmentRequests)
+        assertEquals(3 * 2 * 2, output.size)
+        assertTrue(engine.backendName.contains("FAST"))
+        assertFalse(engine.backendName.contains("GPU"))
     }
 
     @Test

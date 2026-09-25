@@ -2,6 +2,7 @@ package com.rimuru.twobytwo
 
 import com.rimuru.twobytwo.data.work.EnhanceRequestJson
 import com.rimuru.twobytwo.domain.model.Accelerator
+import com.rimuru.twobytwo.domain.model.CropPreset
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.ModelProfile
@@ -9,11 +10,19 @@ import com.rimuru.twobytwo.domain.model.OutputFormat
 import com.rimuru.twobytwo.domain.model.modelProfile
 import com.rimuru.twobytwo.presentation.EnhanceViewModel
 import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetCacheLimitBytes
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetColorize
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetColorizeStrength
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetCropPreset
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetDeblur
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetDeblurStrength
 import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetExportFormat
 import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetJpegQuality
 import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetKeepExif
 import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetKeepGps
 import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetModelProfile
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetScratchRepair
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetScratchRepairStrength
+import com.rimuru.twobytwo.presentation.EnhanceViewModel.Intent.SetSharpen
 import com.rimuru.twobytwo.presentation.EnhanceViewModel.UiState
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -38,6 +47,58 @@ class SettingsStateTest {
         assertFalse(state.keepGps)
         assertFalse(state.fastPathOfferHandled)
         assertEquals(EnhanceRequest.DEFAULT_CACHE_LIMIT_BYTES, state.cacheLimitBytes)
+    }
+
+    @Test
+    fun `initial settings preserve the legacy restoration defaults`() {
+        val state = UiState()
+
+        assertEquals(null, state.cropPreset)
+        assertTrue(state.sharpen)
+        assertFalse(state.deblurEnabled)
+        assertEquals(50, state.deblurStrength)
+        assertFalse(state.scratchRepairEnabled)
+        assertEquals(50, state.scratchRepairStrength)
+        assertFalse(state.colorizeEnabled)
+        assertEquals(50, state.colorizeStrength)
+    }
+
+    @Test
+    fun `restoration settings reduce and map into the request without defaults`() {
+        var state = UiState()
+        state = EnhanceViewModel.applySettingsIntent(state, SetCropPreset(CropPreset.PORTRAIT_4_5))
+        state = EnhanceViewModel.applySettingsIntent(state, SetSharpen(false))
+        state = EnhanceViewModel.applySettingsIntent(state, SetDeblur(true))
+        state = EnhanceViewModel.applySettingsIntent(state, SetDeblurStrength(64))
+        state = EnhanceViewModel.applySettingsIntent(state, SetScratchRepair(true))
+        state = EnhanceViewModel.applySettingsIntent(state, SetScratchRepairStrength(61))
+        state = EnhanceViewModel.applySettingsIntent(state, SetColorize(true))
+        state = EnhanceViewModel.applySettingsIntent(state, SetColorizeStrength(59))
+
+        val request = EnhanceViewModel.requestFor(state)
+
+        assertEquals(CropPreset.PORTRAIT_4_5, state.cropPreset)
+        assertEquals(CropPreset.PORTRAIT_4_5, request.cropPreset)
+        assertFalse(request.sharpen)
+        assertTrue(request.deblurEnabled)
+        assertEquals(64, request.deblurStrength)
+        assertTrue(request.scratchRepairEnabled)
+        assertEquals(61, request.scratchRepairStrength)
+        assertTrue(request.colorizeEnabled)
+        assertEquals(59, request.colorizeStrength)
+    }
+
+    @Test
+    fun `restoration strength intents clamp to zero through one hundred`() {
+        val state = listOf(
+            SetDeblurStrength(-1),
+            SetScratchRepairStrength(101),
+            SetColorizeStrength(-1),
+        ).fold(UiState(), EnhanceViewModel::applySettingsIntent)
+
+        assertEquals(0, state.deblurStrength)
+        assertEquals(100, state.scratchRepairStrength)
+        assertEquals(0, state.colorizeStrength)
     }
 
     @Test

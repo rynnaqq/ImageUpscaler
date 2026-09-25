@@ -5,7 +5,9 @@ import com.rimuru.twobytwo.data.history.FileHistoryStore
 import com.rimuru.twobytwo.data.history.HistoryRecord
 import com.rimuru.twobytwo.data.history.HistoryStore
 import com.rimuru.twobytwo.data.work.EnhanceRequestJson
+import com.rimuru.twobytwo.data.work.EnhanceWorker
 import com.rimuru.twobytwo.data.work.WorkflowPersistenceService
+import com.rimuru.twobytwo.data.work.renderCacheKey
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.CropPreset
@@ -224,18 +226,160 @@ class WorkflowIntegrationTest {
     }
 
     @Test
+    fun `successful item writes compact runtime cache metadata without image bytes`() = runBlocking {
+        val historyRoot = Files.createTempDirectory("workflow-cache-metadata-history").toFile()
+        val cacheRoot = Files.createTempDirectory("workflow-cache-metadata").toFile()
+        val cache = RenderCacheStore(cacheRoot, 1024)
+        val service = WorkflowPersistenceService(FileHistoryStore(historyRoot), cache) { 1L }
+        val result = EnhanceResult.Success(
+            outputUri = "content://media/metadata",
+            width = 12,
+            height = 34,
+            backendUsed = "test backend",
+        )
+
+        service.saveCompletedItem(
+            runId = "metadata-job",
+            batchIndex = 2,
+            sourceUri = "content://input/metadata",
+            settingsJson = "{}",
+            result = result,
+        )
+
+        val metadata = JSONObject(
+            requireNotNull(cache.get(renderCacheKey("metadata-job", 2))).toString(Charsets.UTF_8),
+        )
+        assertEquals("metadata-job", metadata.getString("runId"))
+        assertEquals(2, metadata.getInt("batchIndex"))
+        assertEquals(result.outputUri, metadata.getString("outputUri"))
+        assertEquals(result.width, metadata.getInt("width"))
+        assertEquals(result.height, metadata.getInt("height"))
+        assertEquals(result.backendUsed, metadata.getString("backend"))
+        assertFalse(metadata.has("pixels"))
+        assertTrue(cache.totalBytes() <= 1024)
+    }
+
+    @Test
+    fun `runtime cache metadata eviction stays within its configured limit`() {
+        val historyRoot = Files.createTempDirectory("workflow-cache-runtime-limit-history").toFile()
+        val cacheRoot = Files.createTempDirectory("workflow-cache-runtime-limit").toFile()
+        val cache = RenderCacheStore(cacheRoot, 256)
+        val service = WorkflowPersistenceService(FileHistoryStore(historyRoot), cache) { 1L }
+        val result = EnhanceResult.Success(
+            outputUri = "content://media/runtime",
+            width = 4,
+            height = 5,
+            backendUsed = "test backend",
+        )
+
+        repeat(4) { index ->
+            service.saveCompletedItem(
+                runId = "runtime-job",
+                batchIndex = index,
+                sourceUri = "content://input/runtime-$index",
+                settingsJson = "{}",
+                result = result.copy(outputUri = "content://media/runtime-$index"),
+            )
+        }
+
+        assertTrue(cache.totalBytes() <= 256)
+    }
+
+    @Test
+    fun `failed persistence does not create a success cache entry`() {
+        val cacheRoot = Files.createTempDirectory("workflow-cache-failed-entry").toFile()
+        val cache = RenderCacheStore(cacheRoot, 1024)
+        val history = object : HistoryStore {
+            override fun save(record: HistoryRecord) = error("history failed")
+            override fun list(): List<HistoryRecord> = emptyList()
+            override fun find(id: String): HistoryRecord? = null
+            override fun duplicateSettings(id: String, newId: String): HistoryRecord? = null
+        }
+        val service = WorkflowPersistenceService(history, cache) { 1L }
+
+        runCatching {
+            service.saveCompletedItem(
+                runId = "failed-job",
+                batchIndex = 0,
+                sourceUri = "content://input/failed",
+                settingsJson = "{}",
+                result = EnhanceResult.Success(
+                    outputUri = "content://media/failed",
+                    width = 1,
+                    height = 1,
+                    backendUsed = "test",
+                ),
+            )
+        }
+
+        assertNull(cache.get(renderCacheKey("failed-job", 0)))
+    }
+
+    @Test
+    fun `callback persistence failure is recorded while later items continue`() = runBlocking {
+        var decodeCount = 0
+        val outcomes = CharArray(2) { EnhanceWorker.OUTCOME_QUEUED }
+        val failures = mutableListOf<String>()
+        val imageIo = object : EnhanceImage.ImageIo {
+            override fun measure(uri: String, maxMegapixels: Int) = EnhanceImage.Dimensions(1, 1)
+
+            override fun decode(uri: String, maxMegapixels: Int): EnhanceImage.DecodedImage {
+                decodeCount++
+                return EnhanceImage.DecodedImage(ByteArray(4), 1, 1)
+            }
+
+            override fun encode(
+                rgba: ByteArray,
+                width: Int,
+                height: Int,
+                destinationUri: String,
+                policy: ExportPolicy,
+                exifSourceUri: String?,
+            ): String = "content://media/$destinationUri"
+        }
+
+        EnhanceImage(testEngine(), imageIo).run(
+            request = EnhanceRequest(
+                inputUris = listOf("content://input/first", "content://input/second"),
+                denoise = DenoiseStrength.OFF,
+                sharpen = false,
+            ),
+            outputNameFor = { index, _ -> "output-$index.png" },
+            onItemCompleted = { index, result ->
+                try {
+                    if (result is EnhanceResult.Success && index == 0) error("history failed")
+                    outcomes[index] = if (result is EnhanceResult.Success) {
+                        EnhanceWorker.OUTCOME_SUCCESS
+                    } else {
+                        EnhanceWorker.OUTCOME_FAILURE
+                    }
+                } catch (failure: Throwable) {
+                    outcomes[index] = EnhanceWorker.OUTCOME_FAILURE
+                    failures += failure.message.orEmpty()
+                }
+            },
+        ).toList()
+
+        assertEquals(2, decodeCount)
+        assertEquals("FS", String(outcomes))
+        assertEquals(listOf("history failed"), failures)
+    }
+
+    @Test
     fun `failed item does not write history and later item can still write history`() = runBlocking {
         val historyRoot = Files.createTempDirectory("workflow-history-failure").toFile()
         val cacheRoot = Files.createTempDirectory("workflow-cache-failure").toFile()
         val events = mutableListOf<String>()
-        val history = RecordingHistoryStore(FileHistoryStore(historyRoot), events)
-        val service = WorkflowPersistenceService(
-            historyStore = history,
-            cacheStore = RenderCacheStore(cacheRoot, 1024),
-            clock = { 1L },
-        )
-        val request = EnhanceRequest(
-            inputUris = listOf("content://input/first", "content://input/second"),
+         val history = RecordingHistoryStore(FileHistoryStore(historyRoot), events)
+         val cache = RenderCacheStore(cacheRoot, 1024)
+         val service = WorkflowPersistenceService(
+             historyStore = history,
+             cacheStore = cache,
+             clock = { 1L },
+         )
+         val request = EnhanceRequest(
+             inputUris = listOf("content://input/first", "content://input/second"),
+
             denoise = DenoiseStrength.OFF,
             sharpen = false,
         )
@@ -250,6 +394,7 @@ class WorkflowIntegrationTest {
         )
 
         assertEquals(listOf("job-2-1"), history.list().map { it.id })
+        assertNull(cache.get(renderCacheKey("job-2", 0)))
         assertEquals(1, events.count { it == "save" })
     }
 
@@ -338,6 +483,7 @@ class WorkflowIntegrationTest {
         service.purgeCache()
 
         assertEquals(0L, cache.totalBytes())
+        assertNull(cache.get(renderCacheKey("job-purge", 0)))
         assertEquals(record, history.find(record.id))
         assertTrue(outputRegistry.uris.contains(result.outputUri))
         assertTrue(outputRegistry.deleted.isEmpty())

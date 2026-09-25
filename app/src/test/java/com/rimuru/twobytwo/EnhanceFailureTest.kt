@@ -3,6 +3,7 @@ package com.rimuru.twobytwo
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
+import com.rimuru.twobytwo.domain.model.EnhanceResult
 import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.JobProgress
 import com.rimuru.twobytwo.domain.model.ProcessStep
@@ -98,6 +99,53 @@ class EnhanceFailureTest {
             "test; denoise=classical denoise fallback (model execution deferred); 1 ok, 1 failed",
             progress.last().backendUsed,
         )
+    }
+
+    @Test
+    fun `success callback runs after encode before cancellation can stop progress`() = runBlocking {
+        val events = mutableListOf<String>()
+        val results = mutableListOf<EnhanceResult>()
+        var cancelled = false
+        val imageIo = object : EnhanceImage.ImageIo {
+            override fun measure(uri: String, maxMegapixels: Int) = EnhanceImage.Dimensions(1, 1)
+
+            override fun decode(uri: String, maxMegapixels: Int) =
+                EnhanceImage.DecodedImage(ByteArray(4), 1, 1)
+
+            override fun encode(
+                rgba: ByteArray,
+                width: Int,
+                height: Int,
+                destinationUri: String,
+                policy: ExportPolicy,
+                exifSourceUri: String?,
+            ): String {
+                events += "encode"
+                cancelled = true
+                return "content://output/$destinationUri"
+            }
+        }
+
+        val error = runCatching {
+            EnhanceImage(testEngine(), imageIo).run(
+                request = EnhanceRequest(
+                    inputUris = listOf("content://input/first", "content://input/second"),
+                    denoise = com.rimuru.twobytwo.domain.model.DenoiseStrength.OFF,
+                    sharpen = false,
+                ),
+                outputNameFor = { index, _ -> "output-$index.png" },
+                isCancelled = { cancelled },
+                onItemCompleted = { index, result ->
+                    events += "callback:$index"
+                    results += result
+                },
+            ).toList()
+        }.exceptionOrNull()
+
+        assertTrue(error is CancellationException)
+        assertEquals(listOf("encode", "callback:0"), events.take(2))
+        assertEquals(1, results.size)
+        assertTrue(results.single() is EnhanceResult.Success)
     }
 
     @Test

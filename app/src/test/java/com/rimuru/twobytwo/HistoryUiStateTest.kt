@@ -139,16 +139,7 @@ class HistoryUiStateTest {
         assertEquals(82, request.faceRestoreStrength)
         assertEquals(Accelerator.NPU, request.accelerator)
         assertEquals(ModelProfile.FAST, request.modelProfile)
-        assertEquals(1_500_000_000L, request.cacheLimitBytes)
-        assertEquals(expectedRequest.exportPolicy, request.exportPolicy)
-        assertTrue(request.sharpen)
-        assertFalse(request.deblurEnabled)
-        assertEquals(50, request.deblurStrength)
-        assertFalse(request.scratchRepairEnabled)
-        assertEquals(50, request.scratchRepairStrength)
-        assertFalse(request.colorizeEnabled)
-        assertEquals(50, request.colorizeStrength)
-        assertNull(request.cropPreset)
+        assertEquals(expectedRequest.copy(inputUris = listOf(source)), request)
     }
 
     @Test

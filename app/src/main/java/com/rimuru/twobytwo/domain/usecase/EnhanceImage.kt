@@ -151,19 +151,6 @@ class EnhanceImage(
                     }
                     backendUsed = processed.backendUsed
                     skippedSmallFaces += processed.skippedSmallFaces
-                    send(
-                        JobProgress(
-                            step = ProcessStep.BLENDING,
-                            backendUsed = processed.backendUsed,
-                            outputUri = processed.outputUri,
-                            batchIndex = batchIndex,
-                            batchTotal = total,
-                            skippedSmallFaces = processed.skippedSmallFaces,
-                            itemCompleted = true,
-                        ),
-                    )
-                    if (outputUri == null) outputUri = processed.outputUri
-                    succeeded++
                     EnhanceResult.Success(
                         outputUri = processed.outputUri,
                         width = processed.width,
@@ -197,6 +184,21 @@ class EnhanceImage(
                     EnhanceResult.Failure(message, t)
                 }
                 onItemCompleted(batchIndex, itemResult)
+                if (itemResult is EnhanceResult.Success) {
+                    send(
+                        JobProgress(
+                            step = ProcessStep.BLENDING,
+                            backendUsed = itemResult.backendUsed,
+                            outputUri = itemResult.outputUri,
+                            batchIndex = batchIndex,
+                            batchTotal = total,
+                            skippedSmallFaces = itemResult.skippedSmallFaces,
+                            itemCompleted = true,
+                        ),
+                    )
+                    if (outputUri == null) outputUri = itemResult.outputUri
+                    succeeded++
+                }
 
             }
 
@@ -263,8 +265,9 @@ class EnhanceImage(
             overlap = TilingManager.overlapFor(tileConfig.tileSize),
         )
         checkPassCancellation(cancellationRequested)
-        val passProvider = modelProvider ?: NoModelProvider
+        val passProvider = if (request.useNeuralEngine) modelProvider ?: NoModelProvider else NoModelProvider
         var restored = working
+
         val passStatuses = mutableListOf<String>()
         if (!request.denoise.isOff) {
             checkPassCancellation(cancellationRequested)

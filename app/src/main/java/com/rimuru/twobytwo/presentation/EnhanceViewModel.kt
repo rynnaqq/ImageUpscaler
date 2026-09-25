@@ -19,6 +19,7 @@ import com.rimuru.twobytwo.data.history.HistoryStore
 import com.rimuru.twobytwo.data.work.EnhanceRequestJson
 import com.rimuru.twobytwo.data.work.EnhanceWorker
 import com.rimuru.twobytwo.domain.model.Accelerator
+import com.rimuru.twobytwo.domain.model.CropPreset
 import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.EngineMode
@@ -89,10 +90,19 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         val history: List<HistoryRecord> = emptyList(),
         val historyOpen: Boolean = false,
         val selectedHistoryId: String? = null,
+        val cropPreset: CropPreset? = null,
+        val sharpen: Boolean = true,
+        val deblurEnabled: Boolean = false,
+        val deblurStrength: Int = 50,
+        val scratchRepairEnabled: Boolean = false,
+        val scratchRepairStrength: Int = 50,
+        val colorizeEnabled: Boolean = false,
+        val colorizeStrength: Int = 50,
     ) {
         val previewUri: String? get() = pickedUris.firstOrNull()
         val isProcessing: Boolean get() = progress != null && progress.step != ProcessStep.DONE
         val outputFormat: OutputFormat get() = exportPolicy.format
+
         val quality: Int get() = exportPolicy.effectiveJpegQuality
         val keepExif: Boolean get() = exportPolicy.keepExif
         val keepGps: Boolean get() = exportPolicy.keepGps
@@ -106,10 +116,19 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         data class SetDenoise(val percent: Int) : Intent
         data class SetFaceRestore(val enabled: Boolean) : Intent
         data class SetFaceStrength(val percent: Int) : Intent
+        data class SetCropPreset(val preset: CropPreset?) : Intent
+        data class SetSharpen(val enabled: Boolean) : Intent
+        data class SetDeblur(val enabled: Boolean) : Intent
+        data class SetDeblurStrength(val percent: Int) : Intent
+        data class SetScratchRepair(val enabled: Boolean) : Intent
+        data class SetScratchRepairStrength(val percent: Int) : Intent
+        data class SetColorize(val enabled: Boolean) : Intent
+        data class SetColorizeStrength(val percent: Int) : Intent
         data class SetModelProfile(val profile: ModelProfile) : Intent
         data class SetAccelerator(val accelerator: Accelerator) : Intent
         data class SetExportFormat(val format: OutputFormat) : Intent
         data class SetJpegQuality(val quality: Int) : Intent
+
         data class SetKeepExif(val enabled: Boolean) : Intent
         data class SetKeepGps(val enabled: Boolean) : Intent
         data class SetCacheLimitBytes(val bytes: Long) : Intent
@@ -124,11 +143,13 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
 
     private val historyStore = FileHistoryStore(app)
     private var historyLoadJob: Job? = null
+    private var progressCollector: Job? = null
 
     private val _state = MutableStateFlow(
         UiState(
             isLowSpec = DeviceTiers.classify(app).isLowSpec,
             availableAccelerators = probeAvailableAccelerators(app),
+
         ),
     )
     val state: StateFlow<UiState> = _state
@@ -162,10 +183,19 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             is Intent.SetDenoise -> _state.update { it.copy(denoise = intent.percent.coerceIn(0, 100)) }
             is Intent.SetFaceRestore -> _state.update { it.copy(faceRestore = intent.enabled) }
             is Intent.SetFaceStrength -> _state.update { it.copy(faceStrength = intent.percent.coerceIn(0, 100)) }
+            is Intent.SetCropPreset,
+            is Intent.SetSharpen,
+            is Intent.SetDeblur,
+            is Intent.SetDeblurStrength,
+            is Intent.SetScratchRepair,
+            is Intent.SetScratchRepairStrength,
+            is Intent.SetColorize,
+            is Intent.SetColorizeStrength,
             is Intent.SetModelProfile,
             is Intent.SetAccelerator,
             is Intent.SetExportFormat,
             is Intent.SetJpegQuality,
+
             is Intent.SetKeepExif,
             is Intent.SetKeepGps,
             is Intent.SetCacheLimitBytes -> _state.update { applySettingsIntent(it, intent) }
@@ -188,11 +218,14 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
 
+        progressCollector?.cancel()
+        progressCollector = null
         val request = requestFor(s)
         val json = EnhanceRequestJson.encode(request)
         val workData = Data.Builder().putString(EnhanceWorker.KEY_REQUEST, json).build()
         val work = OneTimeWorkRequestBuilder<EnhanceWorker>()
             .setInputData(workData)
+
             .build()
 
         val wm = WorkManager.getInstance(getApplication())
@@ -201,17 +234,19 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             beginJobState(it, s.pickedUris).copy(jobId = work.id)
         }
 
-        observeProgress(work.id)
+        progressCollector = observeProgress(work.id)
     }
 
-    private fun observeProgress(workId: UUID) {
+    private fun observeProgress(workId: UUID): Job {
         val wm = WorkManager.getInstance(getApplication())
-        viewModelScope.launch {
+        return viewModelScope.launch {
             wm.getWorkInfoByIdFlow(workId).collect { info ->
                 when (info?.state) {
                     WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED -> {
                         val p = info.progress
-                        val step = p.getString(EnhanceWorker.KEY_STEP)?.let { runCatching { ProcessStep.valueOf(it) }.getOrNull() }
+                        val step = p.getString(EnhanceWorker.KEY_STEP)?.let {
+                            runCatching { ProcessStep.valueOf(it) }.getOrNull()
+                        }
                         val outputUri = p.getString(EnhanceWorker.KEY_OUTPUT_URI)?.takeIf { it.isNotBlank() }
                         val batchOutcomes = p.getString(EnhanceWorker.KEY_BATCH_OUTCOMES)
                         if (step != null && (step != ProcessStep.DONE || !outputUri.isNullOrBlank())) {
@@ -227,7 +262,11 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                                 error = p.getString(EnhanceWorker.KEY_ERROR)?.takeIf { it.isNotBlank() },
                                 overallOverride = p.getString(EnhanceWorker.KEY_OVERALL_OVERRIDE)?.toFloatOrNull(),
                             )
-                            _state.update { runningState(it, progress, batchOutcomes) }
+                            _state.update { current ->
+                                applyObservedWork(current, workId) {
+                                    runningState(it, progress, batchOutcomes)
+                                }
+                            }
                         }
                     }
                     WorkInfo.State.SUCCEEDED -> {
@@ -252,16 +291,26 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                             info.progress.getInt(EnhanceWorker.KEY_SKIPPED_SMALL_FACES, 0),
                         )
                         if (outputUri == null) {
-                            _state.update {
-                                failedState(
-                                    withBatchOutcomes(it, batchOutcomes),
-                                    error ?: getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed),
-                                    backend,
-                                )
+                            _state.update { current ->
+                                applyObservedWork(current, workId) {
+                                    failedState(
+                                        withBatchOutcomes(it, batchOutcomes),
+                                        error ?: getApplication<Application>()
+                                            .getString(com.rimuru.twobytwo.R.string.error_job_failed),
+                                        backend,
+                                    )
+                                }
                             }
                         } else {
-                            _state.update {
-                                succeededState(withBatchOutcomes(it, batchOutcomes), outputUri, backend, skippedSmallFaces)
+                            _state.update { current ->
+                                applyObservedWork(current, workId) {
+                                    succeededState(
+                                        withBatchOutcomes(it, batchOutcomes),
+                                        outputUri,
+                                        backend,
+                                        skippedSmallFaces,
+                                    )
+                                }
                             }
                         }
                     }
@@ -278,17 +327,22 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                             info.outputData.getString(EnhanceWorker.KEY_BATCH_OUTCOMES),
                             info.progress.getString(EnhanceWorker.KEY_BATCH_OUTCOMES),
                         )
-                        _state.update {
-                            failedState(
-                                withBatchOutcomes(it, batchOutcomes),
-                                error ?: getApplication<Application>().getString(com.rimuru.twobytwo.R.string.error_job_failed),
-                                backend,
-                            )
+                        _state.update { current ->
+                            applyObservedWork(current, workId) {
+                                failedState(
+                                    withBatchOutcomes(it, batchOutcomes),
+                                    error ?: getApplication<Application>()
+                                        .getString(com.rimuru.twobytwo.R.string.error_job_failed),
+                                    backend,
+                                )
+                            }
                         }
                     }
                     WorkInfo.State.CANCELLED -> {
                         val batchOutcomes = info.progress.getString(EnhanceWorker.KEY_BATCH_OUTCOMES)
-                        _state.update { cancelledState(it, batchOutcomes) }
+                        _state.update { current ->
+                            applyObservedWork(current, workId) { cancelledState(it, batchOutcomes) }
+                        }
                     }
                     else -> {}
                 }
@@ -299,6 +353,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
     private fun cancelJob() {
         _state.value.jobId?.let { WorkManager.getInstance(getApplication()).cancelWorkById(it) }
     }
+
 
     private fun toggleHistory() {
         historyLoadJob?.cancel()
@@ -394,10 +449,19 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                 modelProfile = request.modelProfile,
                 exportPolicy = request.exportPolicy,
                 cacheLimitBytes = request.cacheLimitBytes,
+                cropPreset = request.cropPreset,
+                sharpen = request.sharpen,
+                deblurEnabled = request.deblurEnabled,
+                deblurStrength = request.deblurStrength,
+                scratchRepairEnabled = request.scratchRepairEnabled,
+                scratchRepairStrength = request.scratchRepairStrength,
+                colorizeEnabled = request.colorizeEnabled,
+                colorizeStrength = request.colorizeStrength,
                 outputUri = null,
                 progress = null,
                 jobId = null,
                 backendUsed = null,
+
                 error = null,
                 showFastPathOffer = false,
                 historyOpen = false,
@@ -444,12 +508,22 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                 state.modelProfile == ModelProfile.ULTRA
 
         internal fun applySettingsIntent(state: UiState, intent: Intent): UiState = when (intent) {
+            is Intent.SetCropPreset -> state.copy(cropPreset = intent.preset)
+            is Intent.SetSharpen -> state.copy(sharpen = intent.enabled)
+            is Intent.SetDeblur -> state.copy(deblurEnabled = intent.enabled)
+            is Intent.SetDeblurStrength -> state.copy(deblurStrength = intent.percent.coerceIn(0, 100))
+            is Intent.SetScratchRepair -> state.copy(scratchRepairEnabled = intent.enabled)
+            is Intent.SetScratchRepairStrength ->
+                state.copy(scratchRepairStrength = intent.percent.coerceIn(0, 100))
+            is Intent.SetColorize -> state.copy(colorizeEnabled = intent.enabled)
+            is Intent.SetColorizeStrength -> state.copy(colorizeStrength = intent.percent.coerceIn(0, 100))
             is Intent.SetModelProfile -> state.copy(
                 modelProfile = intent.profile,
                 showFastPathOffer = false,
                 fastPathOfferHandled = true,
             )
             is Intent.SetExportFormat -> state.copy(exportPolicy = state.exportPolicy.copy(format = intent.format))
+
             is Intent.SetJpegQuality -> state.copy(
                 exportPolicy = state.exportPolicy.copy(jpegQuality = intent.quality.coerceIn(80, 100)),
             )
@@ -482,15 +556,16 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
             faceRestoreStrength = state.faceStrength,
             accelerator = state.accelerator.takeIf { it in state.availableAccelerators } ?: Accelerator.AUTO,
             useNeuralEngine = state.modelProfile == ModelProfile.ULTRA,
-            sharpen = true,
-            deblurEnabled = false,
-            deblurStrength = 50,
-            scratchRepairEnabled = false,
-            scratchRepairStrength = 50,
-            colorizeEnabled = false,
-            colorizeStrength = 50,
-            cropPreset = null,
+            sharpen = state.sharpen,
+            deblurEnabled = state.deblurEnabled,
+            deblurStrength = state.deblurStrength,
+            scratchRepairEnabled = state.scratchRepairEnabled,
+            scratchRepairStrength = state.scratchRepairStrength,
+            colorizeEnabled = state.colorizeEnabled,
+            colorizeStrength = state.colorizeStrength,
+            cropPreset = state.cropPreset,
             cacheLimitBytes = state.cacheLimitBytes,
+
             exportPolicy = state.exportPolicy,
         )
 
@@ -545,8 +620,15 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         internal fun firstNonBlank(vararg values: String?): String? =
             values.firstOrNull { !it.isNullOrBlank() }
 
+        internal fun applyObservedWork(
+            state: UiState,
+            observedWorkId: UUID,
+            update: (UiState) -> UiState,
+        ): UiState = if (state.jobId == observedWorkId) update(state) else state
+
         internal fun initialBatchItems(uris: List<String>): List<BatchItemState> =
             uris.map { BatchItemState(it) }
+
 
         internal fun beginJobState(state: UiState, uris: List<String>): UiState = state.copy(
             outputUri = null,

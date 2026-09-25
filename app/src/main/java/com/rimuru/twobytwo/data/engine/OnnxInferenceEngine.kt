@@ -6,6 +6,7 @@ import android.content.Context
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.engine.ModelProvider
 import com.rimuru.twobytwo.domain.model.Accelerator
+import com.rimuru.twobytwo.domain.model.ModelProfile
 import kotlinx.coroutines.CancellationException
 import java.nio.FloatBuffer
 
@@ -35,6 +36,12 @@ class OnnxInferenceEngine(
         get() = activeModelKey?.let { backendStatus[it] } ?: "Model not loaded"
 
     private var lastRequestedAccelerator = Accelerator.AUTO
+    private var profile = ModelProfile.ULTRA
+
+    fun withProfile(profile: ModelProfile): OnnxInferenceEngine {
+        this.profile = profile
+        return this
+    }
 
     fun withAccelerator(accelerator: Accelerator): OnnxInferenceEngine {
         lastRequestedAccelerator = accelerator
@@ -54,8 +61,14 @@ class OnnxInferenceEngine(
         tileHeight: Int,
         modelKey: InferenceEngine.ModelKey,
     ): FloatArray {
+        if (profile == ModelProfile.FAST) {
+            activeModelKey = modelKey
+            backendStatus[modelKey] = "Bicubic (FAST; local classical path)"
+            return bicubicFallback(input, tileWidth, tileHeight, modelKey)
+        }
         val session = sessionFor(modelKey)
             ?: return bicubicFallback(input, tileWidth, tileHeight, modelKey)
+
         return try {
             val shape = longArrayOf(1, 3, tileHeight.toLong(), tileWidth.toLong())
             val tensor = ai.onnxruntime.OnnxTensor.createTensor(env, FloatBuffer.wrap(input), shape)

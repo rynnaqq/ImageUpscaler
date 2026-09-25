@@ -23,6 +23,7 @@ import com.rimuru.twobytwo.domain.model.JobProgress
 import com.rimuru.twobytwo.domain.model.OutputFormat
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.model.ScaleFactor
+import com.rimuru.twobytwo.domain.model.modelProfile
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
 import kotlinx.coroutines.CancellationException
 import java.io.File
@@ -48,18 +49,28 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
     CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        val request = EnhanceRequestJson.decode(inputData.getString(KEY_REQUEST)) ?: return failure("Invalid enhancement request")
+        val request = EnhanceRequestJson.decode(inputData.getString(KEY_REQUEST))
+            ?: return failure("Invalid enhancement request")
         val baseName = inputData.getString(KEY_OUTPUT_NAME) ?: defaultBaseName()
         val tier = DeviceTiers.classify(applicationContext)
         val registry = ModelRegistry(applicationContext, ModelManifest.PLACEHOLDER)
         val engine = OnnxInferenceEngine(registry)
+            .withProfile(request.modelProfile)
+            .withAccelerator(request.accelerator)
         var lastBackend = engine.backendName
+        var last: JobProgress? = null
+        val outcomes = CharArray(request.inputUris.size) { OUTCOME_QUEUED }
+        val persistenceFailures = mutableSetOf<Int>()
+        var firstPersistenceFailure: String? = null
 
         try {
             setForeground(createForegroundInfo(applicationContext.getString(R.string.proc_step_preparing)))
 
             val historyStore = FileHistoryStore(applicationContext)
-            val cacheStore = RenderCacheStore(File(applicationContext.cacheDir, "renders"), request.cacheLimitBytes)
+            val cacheStore = RenderCacheStore(
+                File(applicationContext.cacheDir, "renders"),
+                request.cacheLimitBytes,
+            )
             val persistenceService = WorkflowPersistenceService(historyStore, cacheStore)
             val runId = id.toString()
             val settingsJson = EnhanceRequestJson.encodeSettings(request)
@@ -71,26 +82,46 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             )
             val flow = useCase.run(
                 request = request,
-                outputNameFor = { index, _ -> enhanceOutputName(baseName, index, request.exportPolicy.format) },
+                outputNameFor = { index, _ ->
+                    enhanceOutputName(baseName, index, request.exportPolicy.format)
+                },
                 onItemCompleted = { batchIndex, result ->
                     if (result is EnhanceResult.Success) {
-                        persistenceService.saveCompletedItem(
-                            runId = runId,
-                            batchIndex = batchIndex,
-                            sourceUri = request.inputUris[batchIndex],
-                            settingsJson = settingsJson,
-                            result = result,
-                        )
+                        try {
+                            persistenceService.saveCompletedItem(
+                                runId = runId,
+                                batchIndex = batchIndex,
+                                sourceUri = request.inputUris[batchIndex],
+                                settingsJson = settingsJson,
+                                result = result,
+                            )
+                            outcomes[batchIndex] = OUTCOME_SUCCESS
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: OutOfMemoryError) {
+                            throw e
+                         } catch (t: Throwable) {
+                             persistenceFailures += batchIndex
+                             outcomes[batchIndex] = OUTCOME_FAILURE
+
+                            if (firstPersistenceFailure == null) {
+                                firstPersistenceFailure = t.message?.takeIf { it.isNotBlank() }
+                                    ?: t::class.java.simpleName
+                                    ?: "Persistence failed"
+                            }
+                        }
                     }
                 },
             )
 
-            var last: JobProgress? = null
-            val outcomes = CharArray(request.inputUris.size) { OUTCOME_QUEUED }
             flow.collect { progress ->
                 last = progress
                 if (progress.itemCompleted && progress.batchIndex in outcomes.indices) {
-                    outcomes[progress.batchIndex] = if (progress.error == null) OUTCOME_SUCCESS else OUTCOME_FAILURE
+                    outcomes[progress.batchIndex] = when {
+                        progress.batchIndex in persistenceFailures -> OUTCOME_FAILURE
+                        progress.error == null -> OUTCOME_SUCCESS
+                        else -> OUTCOME_FAILURE
+                    }
                 }
                 val reportedBackend = progress.backendUsed?.takeIf { it.isNotBlank() } ?: lastBackend
                 lastBackend = reportedBackend
@@ -113,6 +144,16 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
             }
 
             val outputUri = last?.outputUri
+            val persistenceFailure = firstPersistenceFailure
+            if (persistenceFailure != null) {
+                return failure(
+                    persistenceFailure,
+                    lastBackend,
+                    last?.batchIndex,
+                    last?.batchTotal,
+                    String(outcomes),
+                )
+            }
             return if (last?.step == ProcessStep.DONE && !outputUri.isNullOrBlank()) {
                 Result.success(
                     androidx.work.workDataOf(
@@ -138,13 +179,20 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         } catch (e: OutOfMemoryError) {
             throw e
         } catch (t: Throwable) {
-            return failure(t.message, lastBackend)
+            return failure(
+                t.message,
+                lastBackend,
+                last?.batchIndex,
+                last?.batchTotal,
+                String(outcomes),
+            )
         } finally {
             engine.close()
         }
     }
 
     private fun failure(
+
         message: String?,
         backend: String? = null,
         batchIndex: Int? = null,
