@@ -3,6 +3,7 @@ package com.rimuru.twobytwo
 import com.rimuru.twobytwo.domain.engine.StreamingTileWriter
 import com.rimuru.twobytwo.domain.engine.TileBlender
 import com.rimuru.twobytwo.domain.engine.TilingManager
+import java.io.File
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -12,94 +13,135 @@ import org.junit.Test
 class StreamingTileWriterTest {
 
     @Test
-    fun `streamed rows match legacy blending exactly`() {
-        val tiling = TilingManager(300, 200, scale = 2, tileSize = 64, overlap = 8)
+    fun `4x spooled rows match legacy blending exactly and stay bounded`() {
+        assertSpooledRowsMatchLegacyBlending(scale = 4)
+    }
+
+    @Test
+    fun `8x spooled rows match legacy blending exactly and stay bounded`() {
+        assertSpooledRowsMatchLegacyBlending(scale = 8)
+    }
+
+    @Test
+    fun `close removes spools after a partial accept and is idempotent`() {
+        withScratchDirectory { scratch ->
+            val tiling = TilingManager(70, 66, scale = 4, tileSize = 32, overlap = 8)
+            val tile = tiling.tiles().first()
+            val writer = StreamingTileWriter(tiling.tiles(), tiling, scratch)
+
+            writer.accept(deterministicTileBuffer(tile, tiling.scale), tile)
+            assertEquals(1, writer.activeGroupCount)
+            assertEquals(1, spoolFiles(scratch).size)
+
+            writer.close()
+            writer.close()
+
+            assertEquals(0, writer.activeGroupCount)
+            assertTrue(spoolFiles(scratch).isEmpty())
+        }
+    }
+
+    @Test
+    fun `rejects duplicate out of order and missing tiles`() {
+        withScratchDirectory { scratch ->
+            val tiling = TilingManager(70, 66, scale = 4, tileSize = 32, overlap = 8)
+            val tiles = tiling.tiles()
+            val buffers = tiles.map { deterministicTileBuffer(it, tiling.scale) }
+
+            val duplicateWriter = StreamingTileWriter(tiles, tiling, scratch)
+            try {
+                duplicateWriter.accept(buffers.first(), tiles.first())
+                assertThrows(IllegalArgumentException::class.java) {
+                    duplicateWriter.accept(buffers.first(), tiles.first())
+                }
+            } finally {
+                duplicateWriter.close()
+            }
+
+            val outOfOrderWriter = StreamingTileWriter(tiles, tiling, scratch)
+            try {
+                outOfOrderWriter.accept(buffers.first(), tiles.first())
+                val secondRow = tiles.first { it.row == 1 }
+                assertThrows(IllegalArgumentException::class.java) {
+                    outOfOrderWriter.accept(buffers[tiles.indexOf(secondRow)], secondRow)
+                }
+            } finally {
+                outOfOrderWriter.close()
+            }
+
+            val missingWriter = StreamingTileWriter(tiles, tiling, scratch)
+            try {
+                tiles.dropLast(1).indices.forEach { index ->
+                    missingWriter.accept(buffers[index], tiles[index])
+                }
+                assertThrows(IllegalArgumentException::class.java) {
+                    missingWriter.finish()
+                }
+            } finally {
+                missingWriter.close()
+            }
+        }
+    }
+
+    @Test
+    fun `write row rejects rows that are not next`() {
+        withScratchDirectory { scratch ->
+            val tiling = TilingManager(70, 66, scale = 4, tileSize = 32, overlap = 8)
+            val writer = StreamingTileWriter(tiling.tiles(), tiling, scratch)
+            try {
+                assertThrows(IllegalArgumentException::class.java) {
+                    writer.writeRow(ByteArray(tiling.outWidth * 4), 1)
+                }
+            } finally {
+                writer.close()
+            }
+        }
+    }
+
+    private fun assertSpooledRowsMatchLegacyBlending(scale: Int) {
+        val tiling = TilingManager(70, 66, scale, tileSize = 32, overlap = 8)
         val tiles = tiling.tiles()
-        val buffers = tiles.map { deterministicTileBuffer(it, tiling.scale) }
+        val buffers = tiles.map { deterministicTileBuffer(it, scale) }
         val legacy = ByteArray(tiling.outWidth * tiling.outHeight * 4)
         tiles.indices.forEach { index ->
             TileBlender.blend(buffers[index], tiles[index], tiling, legacy, tiling.outWidth)
         }
 
-        val rows = mutableListOf<ByteArray>()
-        val writer = StreamingTileWriter(tiles, tiling) { rows += it.copyOf() }
-        tiles.indices.forEach { index -> writer.accept(buffers[index], tiles[index]) }
-        writer.finish()
+        withScratchDirectory { scratch ->
+            val writer = StreamingTileWriter(tiles, tiling, scratch)
+            try {
+                var nextTile = 0
+                for (outY in 0 until tiling.outHeight) {
+                    while (!writer.isRowReady(outY)) {
+                        val tile = tiles[nextTile]
+                        writer.accept(buffers[nextTile], tile)
+                        nextTile++
+                        assertEquals(0, writer.retainedTileBufferCount)
+                    }
 
-        assertEquals(tiling.outHeight, rows.size)
-        assertTrue(rows.all { it.size == tiling.outWidth * 4 })
-        rows.indices.forEach { y ->
-            val expected = legacy.copyOfRange(
-                y * tiling.outWidth * 4,
-                (y + 1) * tiling.outWidth * 4,
-            )
-            assertArrayEquals("row $y", expected, rows[y])
-        }
-        assertEquals(0, writer.retainedTileCount)
-    }
+                    val actual = ByteArray(tiling.outWidth * 4) { 0x5a }
+                    writer.writeRow(actual, outY)
+                    val expected = legacy.copyOfRange(
+                        outY * tiling.outWidth * 4,
+                        (outY + 1) * tiling.outWidth * 4,
+                    )
+                    assertArrayEquals("row $outY", expected, actual)
+                    assertTrue(
+                        "active groups ${writer.activeGroupCount}",
+                        writer.maxActiveGroupCount <= 2,
+                    )
+                }
 
-    @Test
-    fun `retains only active row groups`() {
-        val tiling = TilingManager(300, 200, scale = 2, tileSize = 64, overlap = 8)
-        val tiles = tiling.tiles()
-        val groups = tiles.groupBy { it.row }.values
-        val writer = StreamingTileWriter(tiles, tiling) {}
-        var maxRetained = 0
-
-        groups.forEach { group ->
-            group.forEach { tile ->
-                writer.accept(deterministicTileBuffer(tile, tiling.scale), tile)
-                maxRetained = maxOf(maxRetained, writer.retainedTileCount)
+                writer.finish()
+                assertEquals(0, writer.activeGroupCount)
+                assertTrue("max groups ${writer.maxActiveGroupCount}", writer.maxActiveGroupCount <= 2)
+                assertEquals(0, writer.retainedTileBufferCount)
+            } finally {
+                writer.close()
             }
+
+            assertTrue(spoolFiles(scratch).isEmpty())
         }
-        writer.finish()
-
-        assertTrue("retained $maxRetained groups", maxRetained <= 2)
-        assertEquals(0, writer.retainedTileCount)
-    }
-
-    @Test
-    fun `rejects duplicate and out of order tiles`() {
-        val tiling = TilingManager(300, 200, scale = 2, tileSize = 64, overlap = 8)
-        val tiles = tiling.tiles()
-        val buffers = tiles.map { deterministicTileBuffer(it, tiling.scale) }
-        val first = tiles.first()
-        val duplicateWriter = StreamingTileWriter(tiles, tiling) {}
-
-        duplicateWriter.accept(buffers.first(), first)
-        assertThrows(IllegalArgumentException::class.java) {
-            duplicateWriter.accept(buffers.first(), first)
-        }
-
-        val outOfOrderWriter = StreamingTileWriter(tiles, tiling) {}
-        outOfOrderWriter.accept(buffers.first(), first)
-        val secondRow = tiles.first { it.row == 1 }
-        assertThrows(IllegalArgumentException::class.java) {
-            outOfOrderWriter.accept(buffers[tiles.indexOf(secondRow)], secondRow)
-        }
-    }
-
-    @Test
-    fun `finish rejects missing tiles and emits rows only once`() {
-        val tiling = TilingManager(300, 200, scale = 2, tileSize = 64, overlap = 8)
-        val tiles = tiling.tiles()
-        val buffers = tiles.map { deterministicTileBuffer(it, tiling.scale) }
-        val missingWriter = StreamingTileWriter(tiles, tiling) {}
-
-        tiles.dropLast(1).indices.forEach { index ->
-            missingWriter.accept(buffers[index], tiles[index])
-        }
-        assertThrows(IllegalArgumentException::class.java) { missingWriter.finish() }
-
-        val rows = mutableListOf<ByteArray>()
-        val writer = StreamingTileWriter(tiles, tiling) { rows += it.copyOf() }
-        tiles.indices.forEach { index -> writer.accept(buffers[index], tiles[index]) }
-        writer.finish()
-        val count = rows.size
-        writer.finish()
-
-        assertEquals(tiling.outHeight, count)
-        assertEquals(count, rows.size)
     }
 
     private fun deterministicTileBuffer(tile: TilingManager.Tile, scale: Int): ByteArray {
@@ -108,14 +150,30 @@ class StreamingTileWriterTest {
         return ByteArray(width * height * 4).also { data ->
             for (y in 0 until height) {
                 for (x in 0 until width) {
-                    val p = (y * width + x) * 4
-                    val value = (tile.inX * 17 + tile.inY * 13 + x * 7 + y * 11 + tile.row * 31 + tile.col * 19)
-                    data[p] = (value and 0xff).toByte()
-                    data[p + 1] = ((value * 3) and 0xff).toByte()
-                    data[p + 2] = ((value * 5) and 0xff).toByte()
-                    data[p + 3] = 0xff.toByte()
+                    val pixel = (y * width + x) * 4
+                    val value = tile.inX * 17 + tile.inY * 13 + x * 7 + y * 11 + tile.row * 31 + tile.col * 19
+                    data[pixel] = (value and 0xff).toByte()
+                    data[pixel + 1] = ((value * 3) and 0xff).toByte()
+                    data[pixel + 2] = ((value * 5) and 0xff).toByte()
+                    data[pixel + 3] = ((value * 13 + tile.col * 29 + tile.row * 43) and 0xff).toByte()
                 }
             }
         }
     }
+
+    private fun withScratchDirectory(block: (File) -> Unit) {
+        val scratch = File.createTempFile("rimuru2x-writer-test-", ".tmp")
+        try {
+            assertTrue(scratch.delete())
+            assertTrue(scratch.mkdir())
+            block(scratch)
+        } finally {
+            scratch.deleteRecursively()
+        }
+    }
+
+    private fun spoolFiles(scratch: File): List<File> =
+        scratch.listFiles { file -> file.name.startsWith("rimuru2x_tiles_") && file.extension == "rgba" }
+            ?.toList()
+            .orEmpty()
 }

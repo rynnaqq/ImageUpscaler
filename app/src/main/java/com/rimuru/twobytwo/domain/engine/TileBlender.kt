@@ -69,13 +69,18 @@ object TileBlender {
         val tileOutH = tile.inH * scale
         if (outY < 0 || outY >= tiling.outHeight || localY < 0 || localY >= tileOutH) return
 
-        val srcRow = localY * tileOutW * 4
+        val sourceRowSize = Math.multiplyExact(tileOutW, 4)
+        val sourceOffset = if (tileRgba.size == sourceRowSize) {
+            0
+        } else {
+            Math.multiplyExact(localY, sourceRowSize)
+        }
         for (tx in 0 until tileOutW) {
             val outX = tile.inX * scale + tx
             if (outX < 0 || outX >= tiling.outWidth) continue
 
             val w = tiling.featherWeight(outX, outY, tile)
-            val src = srcRow + tx * 4
+            val src = sourceOffset + tx * 4
             val dst = outX * 4
             if (w >= 0.999f) {
                 outRow[dst] = tileRgba[src]
