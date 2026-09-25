@@ -13,6 +13,7 @@ class PngRowWriter(
 
     private val deflater: Deflater
     private val compressedBuffer: ByteArray
+    private var rowsWritten = 0
     private var finished = false
     private var closed = false
 
@@ -28,15 +29,18 @@ class PngRowWriter(
         check(!closed) { "PNG writer is closed" }
         check(!finished) { "PNG writer is finished" }
         require(row.size.toLong() == width.toLong() * 4L) { "RGBA row size does not match width" }
+        check(rowsWritten < height) { "PNG row count exceeds height" }
 
         deflater.setInput(FILTER_NONE)
         drainAvailable()
         deflater.setInput(row)
         drainAvailable()
+        rowsWritten += 1
     }
 
     fun finish() {
         if (finished) return
+        check(rowsWritten == height) { "PNG row count does not match height" }
         finished = true
         deflater.finish()
         while (!deflater.finished()) {

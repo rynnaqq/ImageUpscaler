@@ -35,7 +35,7 @@ class PngRowWriterTest {
         writer.finish()
 
         val chunks = parseChunks(output.toByteArray())
-        assertEquals(listOf("IHDR", "IDAT", "IEND"), chunks.map { it.type })
+        assertPngChunkSequence(chunks)
         assertArrayEquals(
             byteArrayOf(0, 0, 0, 2, 0, 0, 0, 2, 8, 6, 0, 0, 0),
             chunks.first().payload,
@@ -72,7 +72,32 @@ class PngRowWriterTest {
         assertThrows(IllegalArgumentException::class.java) {
             writer.writeRgbaRow(ByteArray(9))
         }
+        writer.writeRgbaRow(ByteArray(8))
         writer.close()
+    }
+
+    @Test
+    fun `writeRgbaRow rejects rows after height is reached`() {
+        val writer = PngRowWriter(ByteArrayOutputStream(), 1, 1)
+        writer.writeRgbaRow(byteArrayOf(1, 2, 3, 4))
+
+        assertThrows(IllegalStateException::class.java) {
+            writer.writeRgbaRow(byteArrayOf(5, 6, 7, 8))
+        }
+        writer.close()
+    }
+
+    @Test
+    fun `finish rejects fewer rows than height`() {
+        val writer = PngRowWriter(ByteArrayOutputStream(), 1, 2)
+        writer.writeRgbaRow(byteArrayOf(1, 2, 3, 4))
+
+        assertThrows(IllegalStateException::class.java) {
+            writer.finish()
+        }
+        assertThrows(IllegalStateException::class.java) {
+            writer.close()
+        }
     }
 
     @Test
@@ -97,8 +122,15 @@ class PngRowWriterTest {
 
         assertFalse(output.closed)
         val chunks = parseChunks(output.toByteArray())
-        assertEquals(listOf("IHDR", "IDAT", "IEND"), chunks.map { it.type })
+        assertPngChunkSequence(chunks)
         assertArrayEquals(byteArrayOf(0, 1, 2, 3, 4), inflateIdat(chunks))
+    }
+
+    private fun assertPngChunkSequence(chunks: List<Chunk>) {
+        assertTrue(chunks.size >= 3)
+        assertEquals("IHDR", chunks.first().type)
+        assertTrue(chunks.subList(1, chunks.lastIndex).all { it.type == "IDAT" })
+        assertEquals("IEND", chunks.last().type)
     }
 
     private fun parseChunks(png: ByteArray): List<Chunk> {
@@ -112,7 +144,7 @@ class PngRowWriterTest {
             val length = readInt(png, offset)
             offset += 4
             assertTrue(length >= 0)
-            assertTrue(length <= png.size - offset - 12)
+            assertTrue(length <= png.size - offset - 8)
             val typeOffset = offset
             val type = String(png, offset, 4, Charsets.US_ASCII)
             offset += 4
