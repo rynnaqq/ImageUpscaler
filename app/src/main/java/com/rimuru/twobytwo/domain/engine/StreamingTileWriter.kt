@@ -11,32 +11,12 @@ private fun deleteSpoolFile(spool: File) {
     }
 }
 
-class StreamingTileWriter private constructor(
+class StreamingTileWriter(
     tiles: List<TilingManager.Tile>,
     private val tiling: TilingManager,
     private val scratchDirectory: File,
-    private val writeRowCallback: ((ByteArray) -> Unit)?,
-    private val deleteSpool: (File) -> Unit,
+    private val deleteSpool: (File) -> Unit = ::deleteSpoolFile,
 ) : Closeable {
-
-    constructor(
-        tiles: List<TilingManager.Tile>,
-        tiling: TilingManager,
-        scratchDirectory: File,
-    ) : this(tiles, tiling, scratchDirectory, null, ::deleteSpoolFile)
-
-    internal constructor(
-        tiles: List<TilingManager.Tile>,
-        tiling: TilingManager,
-        scratchDirectory: File,
-        deleteSpool: (File) -> Unit,
-    ) : this(tiles, tiling, scratchDirectory, null, deleteSpool)
-
-    constructor(
-        tiles: List<TilingManager.Tile>,
-        tiling: TilingManager,
-        writeRow: (ByteArray) -> Unit,
-    ) : this(tiles, tiling, File(System.getProperty("java.io.tmpdir")), writeRow, ::deleteSpoolFile)
 
     private data class TileEntry(
         val offset: Long,
@@ -71,9 +51,6 @@ class StreamingTileWriter private constructor(
 
     internal val maxActiveGroupCount: Int
         get() = maxActiveGroups
-
-    internal val retainedTileBufferCount: Int
-        get() = 0
 
     init {
         require(scratchDirectory.isDirectory) { "scratch directory does not exist" }
@@ -126,10 +103,6 @@ class StreamingTileWriter private constructor(
         require(tileRgba.size == expectedSize) { "tile RGBA size does not match tile" }
 
         if (nextTileIndex == 0) {
-            if (writeRowCallback != null) {
-                require(group.startY >= nextOutputY) { "tile row starts before the last emitted row" }
-                emitUntil(group.startY)
-            }
             openGroup(group)
         }
 
@@ -151,9 +124,7 @@ class StreamingTileWriter private constructor(
         check(!finished) { "streaming tile writer is finished" }
         require(outY == nextOutputY) { "output rows must be written in order" }
         require(outRow.size == rowSize) { "streaming row buffer size mismatch" }
-        if (writeRowCallback == null) {
-            check(isRowReady(outY)) { "output row is not ready" }
-        }
+        check(isRowReady(outY)) { "output row is not ready" }
         writeRowInternal(outRow, outY)
     }
 
@@ -163,11 +134,7 @@ class StreamingTileWriter private constructor(
         if (nextGroupIndex != groups.size) {
             throw IllegalArgumentException("not all tiles were accepted")
         }
-        if (writeRowCallback == null) {
-            check(nextOutputY == tiling.outHeight) { "not all output rows were written" }
-        } else {
-            emitUntil(tiling.outHeight)
-        }
+        check(nextOutputY == tiling.outHeight) { "not all output rows were written" }
         finished = true
     }
 
@@ -210,14 +177,6 @@ class StreamingTileWriter private constructor(
         }
         activeGroups.add(group)
         maxActiveGroups = maxOf(maxActiveGroups, activeGroups.size)
-    }
-
-    private fun emitUntil(limitY: Int) {
-        val end = limitY.coerceAtMost(tiling.outHeight)
-        while (nextOutputY < end) {
-            val row = ByteArray(rowSize)
-            writeRowInternal(row, nextOutputY)
-        }
     }
 
     private fun writeRowInternal(outRow: ByteArray, outY: Int) {

@@ -14,6 +14,45 @@ import org.junit.Test
 
 class StreamingTileWriterTest {
 
+    /**
+     * Tile origins are pulled back at the image edge (`min(row * stride, imageHeight - tileSize)`),
+     * so a row group's origin can start less than `stride` after its predecessor. With the enforced
+     * `tileSize > overlap * 2`, at most three row groups can cover one output row; the pull-back
+     * group is what actually reaches three.
+     */
+    @Test
+    fun `edge pull back opens three active row groups at the 512 tile tier`() {
+        withScratchDirectory { scratch ->
+            val tiling = TilingManager(1024, 1480, scale = 1, tileSize = 512, overlap = 32)
+            val tiles = tiling.tiles()
+            val writer = StreamingTileWriter(tiles, tiling, scratch)
+            try {
+                var nextTile = 0
+                for (outY in 0 until tiling.outHeight) {
+                    while (!writer.isRowReady(outY)) {
+                        val tile = tiles[nextTile]
+                        writer.accept(deterministicTileBuffer(tile, tiling.scale), tile)
+                        nextTile++
+                    }
+
+                    writer.writeRow(ByteArray(tiling.outWidth * 4), outY)
+                    assertTrue(
+                        "active groups ${writer.activeGroupCount}",
+                        writer.activeGroupCount <= MAX_ACTIVE_GROUPS,
+                    )
+                }
+
+                writer.finish()
+                assertEquals(MAX_ACTIVE_GROUPS, writer.maxActiveGroupCount)
+                assertEquals(0, writer.activeGroupCount)
+            } finally {
+                writer.close()
+            }
+
+            assertTrue(spoolFiles(scratch).isEmpty())
+        }
+    }
+
     @Test
     fun `4x spooled rows match legacy blending exactly and stay bounded`() {
         assertSpooledRowsMatchLegacyBlending(scale = 4)
@@ -147,7 +186,6 @@ class StreamingTileWriterTest {
                         val tile = tiles[nextTile]
                         writer.accept(buffers[nextTile], tile)
                         nextTile++
-                        assertEquals(0, writer.retainedTileBufferCount)
                     }
 
                     val actual = ByteArray(tiling.outWidth * 4) { 0x5a }
@@ -158,15 +196,17 @@ class StreamingTileWriterTest {
                     )
                     assertArrayEquals("row $outY", expected, actual)
                     assertTrue(
-                        "active groups ${writer.activeGroupCount}",
-                        writer.maxActiveGroupCount <= 2,
+                        "max active groups ${writer.maxActiveGroupCount}",
+                        writer.maxActiveGroupCount <= MAX_ACTIVE_GROUPS,
                     )
                 }
 
                 writer.finish()
                 assertEquals(0, writer.activeGroupCount)
-                assertTrue("max groups ${writer.maxActiveGroupCount}", writer.maxActiveGroupCount <= 2)
-                assertEquals(0, writer.retainedTileBufferCount)
+                assertTrue(
+                    "max groups ${writer.maxActiveGroupCount}",
+                    writer.maxActiveGroupCount <= MAX_ACTIVE_GROUPS,
+                )
             } finally {
                 writer.close()
             }
@@ -207,4 +247,8 @@ class StreamingTileWriterTest {
         scratch.listFiles { file -> file.name.startsWith("rimuru2x_tiles_") && file.extension == "rgba" }
             ?.toList()
             .orEmpty()
+
+    private companion object {
+        const val MAX_ACTIVE_GROUPS = 3
+    }
 }

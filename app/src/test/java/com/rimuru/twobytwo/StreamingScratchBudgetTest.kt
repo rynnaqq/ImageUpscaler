@@ -2,27 +2,37 @@ package com.rimuru.twobytwo
 
 import com.rimuru.twobytwo.domain.engine.TilingManager
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamingScratchBudgetTest {
 
+    private val pngBytesPerPixel = 5L
+    private val codecMarginBytes = 1L * 1024L * 1024L
+    private val safetyMarginBytes = 16L * 1024L * 1024L
+
     @Test
-    fun `scratch budget covers overlapping raw groups and worst case PNG bytes`() {
+    fun `scratch budget equals overlapping raw groups plus worst case PNG bytes and margins`() {
         val tiling = TilingManager(70, 66, scale = 4, tileSize = 32, overlap = 8)
+        val tiles = tiling.tiles()
 
         val required = EnhanceImage.streamingScratchBytes(
-            tiles = tiling.tiles(),
+            tiles = tiles,
             scale = tiling.scale,
             outputWidth = tiling.outWidth.toLong(),
             outputHeight = tiling.outHeight.toLong(),
         )
 
-        assertTrue(required >= 393_216L + 369_600L)
+        assertEquals("overlap", 393_216L, expectedMaxOverlapBytes(tiles, tiling.scale))
+        assertEquals(
+            393_216L + pngBytes(tiling) + codecMarginBytes + safetyMarginBytes,
+            required,
+        )
     }
 
-    @Test
+    @Test(timeout = 30_000)
     fun `tall input sweeps tens of thousands of row groups`() {
         val inputHeight = 16_000_000
         val tileSize = 256
@@ -42,11 +52,12 @@ class StreamingScratchBudgetTest {
             outputWidth = tiling.outWidth.toLong(),
             outputHeight = tiling.outHeight.toLong(),
         )
-        val pngBound = tiling.outWidth.toLong() * tiling.outHeight * 5L
-        val scaledTileSide = tileSize.toLong() * tiling.scale
-        val overlappingRaw = 2L * scaledTileSide * scaledTileSide * 4L
 
-        assertTrue(required >= pngBound + overlappingRaw)
+        assertEquals("overlap", 32_768L, expectedMaxOverlapBytes(tiles, tiling.scale))
+        assertEquals(
+            32_768L + pngBytes(tiling) + codecMarginBytes + safetyMarginBytes,
+            required,
+        )
     }
 
     @Test
@@ -96,5 +107,38 @@ class StreamingScratchBudgetTest {
 
             assertTrue(required > 0L)
         }
+    }
+
+    private fun pngBytes(tiling: TilingManager): Long =
+        tiling.outWidth.toLong() * tiling.outHeight * pngBytesPerPixel
+
+    /**
+     * Peak raw spool bytes, computed by sweeping start/end events instead of the production
+     * interval scan, so the budget is checked against an independent derivation.
+     */
+    private fun expectedMaxOverlapBytes(tiles: List<TilingManager.Tile>, scale: Int): Long {
+        val events = ArrayList<Pair<Int, Long>>(tiles.size * 2)
+        tiles.groupBy { it.row }.values.forEach { rowTiles ->
+            var startY = Int.MAX_VALUE
+            var endY = Int.MIN_VALUE
+            var bytes = 0L
+            rowTiles.forEach { tile ->
+                val tileWidth = tile.inW.toLong() * scale
+                val tileHeight = tile.inH.toLong() * scale
+                bytes += tileWidth * tileHeight * 4L
+                startY = minOf(startY, tile.inY * scale)
+                endY = maxOf(endY, (tile.inY + tile.inH) * scale)
+            }
+            events += startY to bytes
+            events += endY to -bytes
+        }
+        events.sortWith(compareBy({ it.first }, { it.second }))
+        var active = 0L
+        var peak = 0L
+        events.forEach { (_, delta) ->
+            active += delta
+            peak = maxOf(peak, active)
+        }
+        return peak
     }
 }

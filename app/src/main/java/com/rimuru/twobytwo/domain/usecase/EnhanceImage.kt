@@ -48,7 +48,7 @@ class EnhanceImage(
     private val faceDetector: FaceDetector? = null,
     private val faceRestorer: FaceRestorer? = null,
     private val streamingImageIo: StreamingImageIo? = imageIo as? StreamingImageIo,
-    private val streamingScratchDirectory: File = File(System.getProperty("java.io.tmpdir")),
+    private val streamingScratchDirectory: File = File(System.getProperty("java.io.tmpdir") ?: "."),
 ) {
     interface ImageIo {
         fun measure(uri: String, maxMegapixels: Int): Dimensions
