@@ -36,6 +36,7 @@ class SettingsStateTest {
         assertEquals(97, state.quality)
         assertTrue(state.keepExif)
         assertFalse(state.keepGps)
+        assertFalse(state.fastPathOfferHandled)
         assertEquals(EnhanceRequest.DEFAULT_CACHE_LIMIT_BYTES, state.cacheLimitBytes)
     }
 
@@ -59,6 +60,28 @@ class SettingsStateTest {
         assertFalse(fast.showFastPathOffer)
         assertEquals(ModelProfile.ULTRA, ultra.modelProfile)
         assertFalse(ultra.showFastPathOffer)
+    }
+
+    @Test
+    fun `fast path choices remain handled across subsequent offer checks`() {
+        val eligible = UiState(
+            pickedUris = listOf("content://input/photo"),
+            isLowSpec = true,
+        )
+        val offered = eligible.copy(showFastPathOffer = true)
+
+        val fast = EnhanceViewModel.applySettingsIntent(offered, SetModelProfile(ModelProfile.FAST))
+        val ultra = EnhanceViewModel.applySettingsIntent(offered, SetModelProfile(ModelProfile.ULTRA))
+
+        assertFalse(offered.fastPathOfferHandled)
+        assertTrue(EnhanceViewModel.shouldOfferFastPath(eligible))
+        assertFalse(EnhanceViewModel.shouldOfferFastPath(offered))
+        assertTrue(fast.fastPathOfferHandled)
+        assertFalse(fast.showFastPathOffer)
+        assertFalse(EnhanceViewModel.shouldOfferFastPath(fast))
+        assertTrue(ultra.fastPathOfferHandled)
+        assertFalse(ultra.showFastPathOffer)
+        assertFalse(EnhanceViewModel.shouldOfferFastPath(ultra))
     }
 
     @Test

@@ -76,6 +76,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
         val availableAccelerators: Set<Accelerator> = setOf(Accelerator.AUTO, Accelerator.CPU),
         val exportPolicy: ExportPolicy = ExportPolicy(),
         val cacheLimitBytes: Long = EnhanceRequest.DEFAULT_CACHE_LIMIT_BYTES,
+        val fastPathOfferHandled: Boolean = false,
     ) {
         val previewUri: String? get() = pickedUris.firstOrNull()
         val isProcessing: Boolean get() = progress != null && progress.step != ProcessStep.DONE
@@ -151,12 +152,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
     private fun startJob() {
         val s = _state.value
         if (s.pickedUris.isEmpty()) return
-        if (
-            s.isLowSpec &&
-            !s.showFastPathOffer &&
-            s.accelerator == Accelerator.AUTO &&
-            s.modelProfile == ModelProfile.ULTRA
-        ) {
+        if (shouldOfferFastPath(s)) {
             // US-09: offer fast path once on low-spec devices
             _state.update { it.copy(showFastPathOffer = true) }
             return
@@ -282,10 +278,19 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
                 accelerator == Accelerator.AUTO || probe(accelerator)
             }
 
+        internal fun shouldOfferFastPath(state: UiState): Boolean =
+            state.pickedUris.isNotEmpty() &&
+                state.isLowSpec &&
+                !state.showFastPathOffer &&
+                !state.fastPathOfferHandled &&
+                state.accelerator == Accelerator.AUTO &&
+                state.modelProfile == ModelProfile.ULTRA
+
         internal fun applySettingsIntent(state: UiState, intent: Intent): UiState = when (intent) {
             is Intent.SetModelProfile -> state.copy(
                 modelProfile = intent.profile,
                 showFastPathOffer = false,
+                fastPathOfferHandled = true,
             )
             is Intent.SetExportFormat -> state.copy(exportPolicy = state.exportPolicy.copy(format = intent.format))
             is Intent.SetJpegQuality -> state.copy(
