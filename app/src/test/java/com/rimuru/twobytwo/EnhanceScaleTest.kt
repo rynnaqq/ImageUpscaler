@@ -10,6 +10,8 @@ import com.rimuru.twobytwo.domain.usecase.EnhanceImage
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class EnhanceScaleTest {
@@ -32,6 +34,26 @@ class EnhanceScaleTest {
             768_000_000,
             EnhanceImage.outputBufferSize(48_000, 4_000, EnhanceImage.DEFAULT_MAX_OUTPUT_MEGAPIXELS),
         )
+    }
+
+    @Test
+    fun `four x streams at sixty four megapixels`() {
+        assertTrue(EnhanceImage.shouldStreamOutput(ScaleFactor.X4, 8_000L, 8_000L))
+    }
+
+    @Test
+    fun `eight x streams at sixty four megapixels`() {
+        assertTrue(EnhanceImage.shouldStreamOutput(ScaleFactor.X8, 8_000L, 8_000L))
+    }
+
+    @Test
+    fun `four x below sixty four megapixels stays buffered`() {
+        assertFalse(EnhanceImage.shouldStreamOutput(ScaleFactor.X4, 7_999L, 8_000L))
+    }
+
+    @Test
+    fun `two x stays buffered above sixty four megapixels`() {
+        assertFalse(EnhanceImage.shouldStreamOutput(ScaleFactor.X2, 8_000L, 8_000L))
     }
 
     @Test

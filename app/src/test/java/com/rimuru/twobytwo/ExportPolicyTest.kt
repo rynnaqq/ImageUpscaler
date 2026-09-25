@@ -4,10 +4,15 @@ import com.rimuru.twobytwo.data.work.EnhanceRequestJson
 import com.rimuru.twobytwo.data.work.enhanceOutputName
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.model.Accelerator
+import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
+import com.rimuru.twobytwo.domain.model.EnhanceResult
 import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.OutputFormat
+import com.rimuru.twobytwo.domain.model.ProcessStep
+import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
+import com.rimuru.twobytwo.domain.usecase.StreamingImageIo
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
@@ -235,10 +240,129 @@ class ExportPolicyTest {
     }
 
     @Test
+    fun `large scale pipeline streams rows and preserves export arguments`() = runBlocking {
+        val policy = ExportPolicy(
+            format = OutputFormat.JPEG,
+            jpegQuality = 80,
+            keepExif = false,
+            keepGps = true,
+        )
+
+        listOf(ScaleFactor.X4 to 2_048, ScaleFactor.X8 to 1_024).forEach { (scale, sourceSide) ->
+            val sourceUri = "content://input/$sourceSide"
+            val destinationUri = "output-${scale.multiplier}.jpg"
+            val imageIo = StreamingImageIoFake(sourceSide, sourceSide)
+            var completed: EnhanceResult.Success? = null
+            val progress = EnhanceImage(
+                engine = streamingEngine(),
+                imageIo = imageIo,
+            ).run(
+                request = EnhanceRequest(
+                    inputUris = listOf(sourceUri),
+                    scale = scale,
+                    denoise = DenoiseStrength.OFF,
+                    useNeuralEngine = false,
+                    sharpen = false,
+                    exportPolicy = policy,
+                ),
+                outputNameFor = { _, _ -> destinationUri },
+                onItemCompleted = { _, result ->
+                    if (result is EnhanceResult.Success) completed = result
+                },
+            ).toList()
+            val outputSide = sourceSide * scale.multiplier
+
+            assertEquals(0, imageIo.legacyEncodeCalls)
+            assertEquals(outputSide, imageIo.streamingWidth)
+            assertEquals(outputSide, imageIo.streamingHeight)
+            assertEquals(destinationUri, imageIo.streamingDestinationUri)
+            assertSame(policy, imageIo.streamingPolicy)
+            assertEquals(sourceUri, imageIo.streamingExifSourceUri)
+            assertEquals(outputSide, imageIo.rowCount)
+            assertEquals(outputSide * 4, imageIo.rowSize)
+            assertEquals(ProcessStep.DONE, progress.last().step)
+            assertEquals("content://stream/$destinationUri", progress.last().outputUri)
+            assertEquals(outputSide, completed?.width)
+            assertEquals(outputSide, completed?.height)
+        }
+    }
+
+    @Test
     fun `worker output names use the requested format extension`() {
         assertEquals("photo_1.png", enhanceOutputName("photo", 0, OutputFormat.PNG))
         assertEquals("photo_1.jpg", enhanceOutputName("photo", 0, OutputFormat.JPEG))
         assertEquals("photo_1.webp", enhanceOutputName("photo", 0, OutputFormat.WEBP))
+    }
+
+    private fun streamingEngine(): InferenceEngine = object : InferenceEngine {
+        override val backendName = "test"
+        override fun isAvailable(accelerator: Accelerator) = true
+        override fun close() = Unit
+
+        override fun upscaleTile(
+            input: FloatArray,
+            tileWidth: Int,
+            tileHeight: Int,
+            modelKey: InferenceEngine.ModelKey,
+        ): FloatArray {
+            val passScale = InferenceEngine.scaleFor(modelKey)
+            val outputValues = 3L * tileWidth * passScale * tileHeight * passScale
+            return FloatArray(Math.toIntExact(outputValues))
+        }
+    }
+
+    private class StreamingImageIoFake(
+        private val width: Int,
+        private val height: Int,
+    ) : EnhanceImage.ImageIo, StreamingImageIo {
+        var legacyEncodeCalls = 0
+        var streamingWidth = 0
+        var streamingHeight = 0
+        var streamingDestinationUri = ""
+        var streamingPolicy: ExportPolicy? = null
+        var streamingExifSourceUri: String? = null
+        var rowCount = 0
+        var rowSize = 0
+
+        override fun measure(uri: String, maxMegapixels: Int) = EnhanceImage.Dimensions(width, height)
+
+        override fun decode(uri: String, maxMegapixels: Int) = EnhanceImage.DecodedImage(
+            ByteArray(Math.toIntExact(width.toLong() * height * 4L)),
+            width,
+            height,
+        )
+
+        override fun encode(
+            rgba: ByteArray,
+            width: Int,
+            height: Int,
+            destinationUri: String,
+            policy: ExportPolicy,
+            exifSourceUri: String?,
+        ): String {
+            legacyEncodeCalls++
+            return "content://legacy/$destinationUri"
+        }
+
+        override fun encodeStreaming(
+            width: Int,
+            height: Int,
+            destinationUri: String,
+            policy: ExportPolicy,
+            exifSourceUri: String?,
+            produceRows: ((ByteArray) -> Unit) -> Unit,
+        ): String {
+            streamingWidth = width
+            streamingHeight = height
+            streamingDestinationUri = destinationUri
+            streamingPolicy = policy
+            streamingExifSourceUri = exifSourceUri
+            produceRows { row ->
+                rowCount++
+                rowSize = row.size
+            }
+            return "content://stream/$destinationUri"
+        }
     }
 
 }
