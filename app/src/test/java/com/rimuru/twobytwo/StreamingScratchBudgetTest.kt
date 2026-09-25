@@ -25,11 +25,12 @@ class StreamingScratchBudgetTest {
     @Test
     fun `tall input sweeps tens of thousands of row groups`() {
         val inputHeight = 16_000_000
+        val tileSize = 256
         val tiling = TilingManager(
             imageWidth = 1,
             imageHeight = inputHeight,
             scale = 4,
-            tileSize = 256,
+            tileSize = tileSize,
             overlap = 24,
         )
         val tiles = tiling.tiles()
@@ -42,7 +43,8 @@ class StreamingScratchBudgetTest {
             outputHeight = tiling.outHeight.toLong(),
         )
         val pngBound = tiling.outWidth.toLong() * tiling.outHeight * 5L
-        val overlappingRaw = 2L * tiling.tileSize * tiling.scale * tiling.tileSize * tiling.scale * 4L
+        val scaledTileSide = tileSize.toLong() * tiling.scale
+        val overlappingRaw = 2L * scaledTileSide * scaledTileSide * 4L
 
         assertTrue(required >= pngBound + overlappingRaw)
     }
