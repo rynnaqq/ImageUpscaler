@@ -187,12 +187,11 @@ class StreamingTileWriter private constructor(
                 }
             }
         }
-        if (failure == null) {
-            activeGroups.clear()
-            sourceRowScratch = ByteArray(0)
-            cleanupPending = false
-            closed = true
-        }
+        failure?.let { throw it }
+        activeGroups.clear()
+        sourceRowScratch = ByteArray(0)
+        cleanupPending = false
+        closed = true
     }
 
     private fun openGroup(group: RowGroup) {

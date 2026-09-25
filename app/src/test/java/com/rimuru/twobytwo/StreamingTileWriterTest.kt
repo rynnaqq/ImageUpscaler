@@ -44,7 +44,7 @@ class StreamingTileWriterTest {
     }
 
     @Test
-    fun `close retries failed spool deletion without replacing primary failure`() {
+    fun `close surfaces failed spool deletion and retries it`() {
         withScratchDirectory { scratch ->
             val tiling = TilingManager(70, 66, scale = 4, tileSize = 32, overlap = 8)
             val tile = tiling.tiles().first()
@@ -57,16 +57,9 @@ class StreamingTileWriterTest {
             }
 
             writer.accept(deterministicTileBuffer(tile, tiling.scale), tile)
-            val expectedFailure = IllegalStateException("primary failure")
-            val thrownFailure = assertThrows(IllegalStateException::class.java) {
-                try {
-                    throw expectedFailure
-                } finally {
-                    writer.close()
-                }
-            }
+            val thrownFailure = assertThrows(IOException::class.java) { writer.close() }
 
-            assertSame(expectedFailure, thrownFailure)
+            assertSame(deletionFailure, thrownFailure)
             assertEquals(1, deleteAttempts)
             assertEquals(1, spoolFiles(scratch).size)
 
