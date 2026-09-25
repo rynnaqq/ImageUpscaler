@@ -65,6 +65,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,8 +83,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -103,7 +109,6 @@ import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.ui.RimuruTheme
 import java.text.DateFormat
 import java.util.Date
-import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /** App shell: theme + navigation between S1-S5 via the single MVI state machine. */
@@ -1106,15 +1111,17 @@ fun ComparisonViewer(
     resultUri: String?,
     modifier: Modifier = Modifier,
 ) {
-    var splitFraction by remember { mutableStateOf(0.5f) }
-    var zoom by remember { mutableStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
+    var comparison by remember { mutableStateOf(ComparisonTransform()) }
+    val currentComparison by rememberUpdatedState(comparison)
 
     androidx.compose.foundation.layout.BoxWithConstraints(modifier.clipToBounds()) {
         val width = constraints.maxWidth.toFloat().coerceAtLeast(1f)
         val height = constraints.maxHeight.toFloat().coerceAtLeast(1f)
         val density = LocalDensity.current
         val handleHalfPx = with(density) { 24.dp.toPx() }
+        val splitFraction = comparison.splitFraction
+        val zoom = comparison.zoom
+        val offset = comparison.pan
         val handleX = (width * splitFraction).coerceIn(
             handleHalfPx.coerceAtMost(width / 2f),
             width - handleHalfPx.coerceAtMost(width / 2f),
@@ -1122,6 +1129,7 @@ fun ComparisonViewer(
         val handleDescription = stringResource(R.string.compare_handle)
         val hasResult = resultUri != null
         val resultLabel = if (hasResult) R.string.compare_enhanced else R.string.compare_preview
+        val resultDescription = stringResource(resultLabel)
         val transform = Modifier.graphicsLayer {
             transformOrigin = TransformOrigin(0f, 0f)
             scaleX = zoom
@@ -1132,7 +1140,7 @@ fun ComparisonViewer(
 
         AsyncImage(
             model = resultUri ?: originalUri,
-            contentDescription = null,
+            contentDescription = resultDescription,
             contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxSize().then(transform),
         )
@@ -1148,7 +1156,7 @@ fun ComparisonViewer(
         ) {
             AsyncImage(
                 model = originalUri,
-                contentDescription = null,
+                contentDescription = stringResource(R.string.compare_original),
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.fillMaxSize().then(transform),
             )
@@ -1159,32 +1167,17 @@ fun ComparisonViewer(
                 .fillMaxSize()
                 .pointerInput(width, height) {
                     detectTransformGestures { centroid, pan, gestureZoom, _ ->
-                        val oldZoom = zoom
-                        val newZoom = clampComparisonZoom(oldZoom * gestureZoom)
-                        if (oldZoom == 1f && newZoom == 1f && abs(pan.x) > abs(pan.y)) {
-                            splitFraction = (splitFraction + pan.x / width).coerceIn(0f, 1f)
-                        } else {
-                            var nextX = offset.x
-                            var nextY = offset.y
-                            if (newZoom != oldZoom) {
-                                val ratio = newZoom / oldZoom
-                                nextX = centroid.x - (centroid.x - nextX) * ratio
-                                nextY = centroid.y - (centroid.y - nextY) * ratio
-                            }
-                            nextX += pan.x
-                            nextY += pan.y
-                            offset = Offset(
-                                clampComparisonPanAxis(nextX, newZoom, width),
-                                clampComparisonPanAxis(nextY, newZoom, height),
-                            )
-                        }
-                        zoom = newZoom
+                        comparison = currentComparison.applyGesture(
+                            centroid = centroid,
+                            panDelta = pan,
+                            gestureZoom = gestureZoom,
+                            viewport = Offset(width, height),
+                        )
                     }
                 }
                 .pointerInput(Unit) {
                     detectTapGestures(onDoubleTap = {
-                        zoom = 1f
-                        offset = Offset.Zero
+                        comparison = currentComparison.copy(zoom = 1f, pan = Offset.Zero)
                     })
                 },
         )
@@ -1206,12 +1199,18 @@ fun ComparisonViewer(
                 .size(48.dp)
                 .semantics {
                     contentDescription = handleDescription
-                    stateDescription = "${(splitFraction * 100).toInt()}%"
+                    stateDescription = "${(splitFraction * 100).roundToInt()}%"
+                    role = Role.Adjustable
+                    progressBarRangeInfo = ProgressBarRangeInfo(splitFraction, 0f..1f)
+                    setProgress { target ->
+                        comparison = comparison.moveSplitTo(target)
+                        true
+                    }
                 }
                 .pointerInput(width) {
                     detectHorizontalDragGestures { change, dragAmount ->
                         change.consume()
-                        splitFraction = (splitFraction + dragAmount / width).coerceIn(0f, 1f)
+                        comparison = currentComparison.moveSplitBy(dragAmount, width)
                     }
                 },
             contentAlignment = Alignment.Center,
@@ -1242,9 +1241,7 @@ fun ComparisonViewer(
         )
         TextButton(
             onClick = {
-                splitFraction = 0.5f
-                zoom = 1f
-                offset = Offset.Zero
+                comparison = ComparisonTransform()
             },
             modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
             colors = ButtonDefaults.textButtonColors(
