@@ -137,16 +137,25 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo {
                 val sourceExif = resolver.openInputStream(Uri.parse(sourceUri))!!.use { input ->
                     ExifInterface(input)
                 }
+                val expectedMetadata = metadataTags.mapNotNull { tag ->
+                    sourceExif.getAttribute(tag)?.let { tag to it }
+                }.toMap()
                 val pfd = resolver.openFileDescriptor(outUri, "rw")
                     ?: error("MediaStore output descriptor unavailable")
                 pfd.use {
                     val destinationExif = ExifInterface(it.fileDescriptor)
-                    metadataTags.forEach { tag ->
-                        sourceExif.getAttribute(tag)?.let { value ->
-                            destinationExif.setAttribute(tag, value)
-                        }
+                    expectedMetadata.forEach { (tag, value) ->
+                        destinationExif.setAttribute(tag, value)
                     }
                     destinationExif.saveAttributes()
+                }
+                resolver.openInputStream(outUri)!!.use { input ->
+                    val savedExif = ExifInterface(input)
+                    expectedMetadata.forEach { (tag, expected) ->
+                        check(savedExif.getAttribute(tag) == expected) {
+                            "EXIF verification failed for $tag"
+                        }
+                    }
                 }
             }
 

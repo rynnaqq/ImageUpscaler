@@ -123,6 +123,26 @@ class MediaStoreImageIoTest {
     }
 
     @Test
+    fun requestedMetadataWithNoSourceTagsPublishes() {
+        val source = sourceWithMetadata(includeMetadata = false)
+        val name = trackName("metadata-empty")
+        val uri = Uri.parse(
+            io().encode(
+                pixelRgba(),
+                1,
+                1,
+                name,
+                ExportPolicy(keepExif = true, keepGps = true),
+                Uri.fromFile(source).toString(),
+            ),
+        )
+        outputUris += uri
+
+        val exif = openExif(uri)
+        (NON_LOCATION_TAGS + GPS_TAGS).forEach { tag -> assertNull(exif.getAttribute(tag)) }
+    }
+
+    @Test
     fun requestedMetadataWritesForEveryFormat() {
         listOf(OutputFormat.PNG, OutputFormat.JPEG, OutputFormat.WEBP).forEach { format ->
             val source = sourceWithMetadata()
@@ -182,13 +202,14 @@ class MediaStoreImageIoTest {
         return file
     }
 
-    private fun sourceWithMetadata(): File {
+    private fun sourceWithMetadata(includeMetadata: Boolean = true): File {
         val file = trackFile("source", ByteArray(0))
         val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
         FileOutputStream(file).use { output ->
             check(bitmap.compress(Bitmap.CompressFormat.JPEG, 100, output))
         }
         bitmap.recycle()
+        if (!includeMetadata) return file
         val exif = ExifInterface(file.absolutePath)
         exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, "2020:01:02 03:04:05")
         exif.setAttribute(ExifInterface.TAG_MAKE, "Rimuru")
