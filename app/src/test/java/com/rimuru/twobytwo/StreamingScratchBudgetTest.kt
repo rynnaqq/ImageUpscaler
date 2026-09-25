@@ -83,7 +83,7 @@ class StreamingScratchBudgetTest {
 
     @Test
     fun `scratch budget remains finite above Int dimensions for 4x and 8x`() {
-        val tiling = TilingManager(2, 2, scale = 1, tileSize = 2, overlap = 1)
+        val tiling = TilingManager(2, 2, scale = 1, tileSize = 4, overlap = 1)
         val tile = tiling.tiles().first().copy(inW = 1, inH = 1)
 
         listOf(4, 8).forEach { scale ->
