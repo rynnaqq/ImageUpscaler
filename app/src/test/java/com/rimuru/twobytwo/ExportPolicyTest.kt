@@ -334,7 +334,6 @@ class ExportPolicyTest {
                 sharpen = true,
             ),
             outputNameFor = { _, _ -> "face-sharpen.png" },
-            sharpenMaxMegapixels = Double.MAX_VALUE,
         ).toList()
         val tileSide = 1_024
         val facePass = FaceRestorePass(

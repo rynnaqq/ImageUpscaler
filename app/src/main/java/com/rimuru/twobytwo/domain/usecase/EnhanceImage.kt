@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * The core pipeline: decode → tiled upscale with seam blending → optional
@@ -47,6 +48,7 @@ class EnhanceImage(
     private val faceDetector: FaceDetector? = null,
     private val faceRestorer: FaceRestorer? = null,
     private val streamingImageIo: StreamingImageIo? = imageIo as? StreamingImageIo,
+    private val streamingScratchDirectory: File = File(System.getProperty("java.io.tmpdir")),
 ) {
     interface ImageIo {
         fun measure(uri: String, maxMegapixels: Int): Dimensions
@@ -78,6 +80,70 @@ class EnhanceImage(
     companion object {
         internal const val DEFAULT_MAX_OUTPUT_MEGAPIXELS = 256.0
         internal const val STREAMING_OUTPUT_MIN_PIXELS = 64_000_000L
+        private const val STREAMING_PNG_BYTES_PER_PIXEL = 5L
+        private const val STREAMING_CODEC_MARGIN_BYTES = 1L * 1024L * 1024L
+        private const val STREAMING_SAFETY_MARGIN_BYTES = 16L * 1024L * 1024L
+
+        private data class ScratchGroup(
+            val startY: Long,
+            val endY: Long,
+            val bytes: Long,
+        )
+
+        internal fun streamingScratchBytes(
+            tiles: List<TilingManager.Tile>,
+            scale: Int,
+            outputWidth: Long,
+            outputHeight: Long,
+        ): Long {
+            require(scale > 0) { "streaming scale must be positive" }
+            require(outputWidth > 0L && outputHeight > 0L) { "streaming output dimensions must be positive" }
+            require(tiles.isNotEmpty()) { "streaming tile plan must not be empty" }
+            val scaleLong = scale.toLong()
+            val groups = tiles.groupBy { it.row }.values.map { rowTiles ->
+                var startY = Long.MAX_VALUE
+                var endY = 0L
+                var bytes = 0L
+                rowTiles.forEach { tile ->
+                    require(tile.inY >= 0 && tile.inW > 0 && tile.inH > 0) { "invalid streaming tile dimensions" }
+                    val tileWidth = Math.multiplyExact(tile.inW.toLong(), scaleLong)
+                    val tileHeight = Math.multiplyExact(tile.inH.toLong(), scaleLong)
+                    bytes = Math.addExact(
+                        bytes,
+                        Math.multiplyExact(Math.multiplyExact(tileWidth, tileHeight), 4L),
+                    )
+                    val tileStartY = Math.multiplyExact(tile.inY.toLong(), scaleLong)
+                    val tileEndY = Math.multiplyExact(
+                        Math.addExact(tile.inY.toLong(), tile.inH.toLong()),
+                        scaleLong,
+                    )
+                    startY = minOf(startY, tileStartY)
+                    endY = maxOf(endY, tileEndY)
+                }
+                ScratchGroup(startY, endY, bytes)
+            }
+            require(groups.all { it.startY >= 0L && it.startY < it.endY && it.endY <= outputHeight }) {
+                "streaming tile plan exceeds output dimensions"
+            }
+            var maxSpoolBytes = 0L
+            groups.forEach { candidate ->
+                var activeBytes = 0L
+                groups.forEach { group ->
+                    if (group.startY <= candidate.startY && candidate.startY < group.endY) {
+                        activeBytes = Math.addExact(activeBytes, group.bytes)
+                    }
+                }
+                maxSpoolBytes = maxOf(maxSpoolBytes, activeBytes)
+            }
+            val pngBytes = Math.multiplyExact(
+                Math.multiplyExact(outputWidth, outputHeight),
+                STREAMING_PNG_BYTES_PER_PIXEL,
+            )
+            return Math.addExact(
+                Math.addExact(maxSpoolBytes, pngBytes),
+                Math.addExact(STREAMING_CODEC_MARGIN_BYTES, STREAMING_SAFETY_MARGIN_BYTES),
+            )
+        }
 
         internal fun shouldStreamOutput(scale: ScaleFactor, width: Long, height: Long): Boolean =
             (scale == ScaleFactor.X4 || scale == ScaleFactor.X8) &&
@@ -350,9 +416,19 @@ class EnhanceImage(
         val modelScale = InferenceEngine.scaleFor(modelKey)
         var skippedSmallFaces = 0
         val outMp = outputWidth * outputHeight / 1_000_000.0
-        val sharpenTiles = sharpenOutput && outMp <= sharpenMaxMegapixels
+        val sharpenTiles = sharpenOutput && (streamOutput || outMp <= sharpenMaxMegapixels)
 
         if (streamOutput) {
+            val streamingIo = checkNotNull(streamingImageIo)
+            val tiles = tiling.tiles()
+            streamingIo.checkScratchCapacity(
+                streamingScratchBytes(
+                    tiles = tiles,
+                    scale = tiling.scale,
+                    outputWidth = outputWidth,
+                    outputHeight = outputHeight,
+                ),
+            )
             if (request.faceRestoreEnabled) {
                 checkPassCancellation(cancellationRequested)
                 emit(
@@ -376,29 +452,24 @@ class EnhanceImage(
             var nextTileIndex = 0
             var tilesDone = 0
             var rowsDone = 0
-            var writerFinished = false
-            val tiles = tiling.tiles()
-            val pendingRows = ArrayList<ByteArray>()
-            var writer: StreamingTileWriter? = null
             val rowSize = Math.toIntExact(Math.multiplyExact(outputWidth, 4L))
-            val encodedUri = streamingImageIo!!.encodeStreaming(
-                width = outputWidth.toInt(),
-                height = outputHeight.toInt(),
-                destinationUri = outputUri,
-                policy = request.exportPolicy,
-                exifSourceUri = inputUri,
-            ) { rowBuffer ->
-                checkPassCancellation(cancellationRequested)
-                require(rowBuffer.size.toLong() == rowSize.toLong()) { "streaming row buffer size mismatch" }
-                check(rowsDone < tiling.outHeight) { "streaming row count exceeds output height" }
-                val activeWriter = writer ?: StreamingTileWriter(
-                    tiles = tiles,
-                    tiling = tiling,
-                ) { row ->
-                    pendingRows += row
-                }.also { writer = it }
-                while (pendingRows.isEmpty()) {
-                    if (nextTileIndex < tiles.size) {
+            val writer = StreamingTileWriter(tiles, tiling, streamingScratchDirectory)
+            var processingFailure: Throwable? = null
+            val encodedUri = try {
+                val encoded = streamingIo.encodeStreaming(
+                    width = outputWidth.toInt(),
+                    height = outputHeight.toInt(),
+                    destinationUri = outputUri,
+                    policy = request.exportPolicy,
+                    exifSourceUri = inputUri,
+                ) { rowBuffer ->
+                    checkPassCancellation(cancellationRequested)
+                    require(rowBuffer.size.toLong() == rowSize.toLong()) { "streaming row buffer size mismatch" }
+                    check(rowsDone < tiling.outHeight) { "streaming row count exceeds output height" }
+                    while (!writer.isRowReady(rowsDone)) {
+                        check(nextTileIndex < tiles.size) {
+                            "streaming row is not ready before all tiles were accepted"
+                        }
                         val tile = tiles[nextTileIndex++]
                         tilesDone++
                         emit(
@@ -449,27 +520,28 @@ class EnhanceImage(
                                         isCancelled = cancellationRequested,
                                     )
                                 }
-                                activeWriter.accept(preparedRgba, currentTile)
+                                writer.accept(preparedRgba, currentTile)
                             },
                         )
-                    } else {
-                        activeWriter.finish()
-                        writerFinished = true
                     }
+                    writer.writeRow(rowBuffer, rowsDone)
+                    rowsDone++
                 }
-                pendingRows.removeAt(0).copyInto(rowBuffer)
-                rowsDone++
-                if (rowsDone == tiling.outHeight) {
-                    check(nextTileIndex == tiles.size) { "streaming output ended before all tiles" }
-                    if (!writerFinished) {
-                        activeWriter.finish()
-                        writerFinished = true
-                    }
-                    check(pendingRows.isEmpty()) { "streaming output produced extra rows" }
+                check(rowsDone == tiling.outHeight) { "streaming encoder did not consume all rows" }
+                writer.finish()
+                encoded
+            } catch (error: Throwable) {
+                processingFailure = error
+                throw error
+            } finally {
+                try {
+                    writer.close()
+                } catch (closeFailure: Throwable) {
+                    val failure = processingFailure
+                    if (failure == null) throw closeFailure
+                    failure.addSuppressed(closeFailure)
                 }
             }
-            check(rowsDone == tiling.outHeight) { "streaming encoder did not consume all rows" }
-            check(writerFinished) { "streaming tile writer was not finished" }
             if (request.faceRestoreEnabled) {
                 var detail = checkNotNull(faceRestoreDetail)
                 if (detail.startsWith("face restoration seam completed")) {

@@ -79,6 +79,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                 MediaStoreImageIo(applicationContext),
                 EnhanceImage.TileConfig(tier.recommendedTileSize),
                 modelProvider = registry,
+                streamingScratchDirectory = applicationContext.cacheDir,
             )
             val flow = useCase.run(
                 request = request,

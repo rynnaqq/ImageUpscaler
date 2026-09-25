@@ -3,6 +3,7 @@ package com.rimuru.twobytwo
 import com.rimuru.twobytwo.data.work.parseScaleFactor
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.model.Accelerator
+import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.ScaleFactor
@@ -110,6 +111,73 @@ class EnhanceScaleTest {
 
         assertTrue(outputPixels > Int.MAX_VALUE.toLong() / 4L)
         assertEquals(decodeMarker, progress.last().error)
+    }
+
+    @Test
+    fun `streaming capacity check precedes first row callback`() = runBlocking {
+        val events = mutableListOf<String>()
+        val checkedBytes = mutableListOf<Long>()
+        val sourceSide = 2_000
+        val imageIo = object : EnhanceImage.ImageIo, StreamingImageIo {
+            override fun measure(uri: String, maxMegapixels: Int) =
+                EnhanceImage.Dimensions(sourceSide, sourceSide)
+
+            override fun decode(uri: String, maxMegapixels: Int): EnhanceImage.DecodedImage =
+                EnhanceImage.DecodedImage(ByteArray(sourceSide * sourceSide * 4), sourceSide, sourceSide)
+
+            override fun encode(
+                rgba: ByteArray,
+                width: Int,
+                height: Int,
+                destinationUri: String,
+                policy: ExportPolicy,
+                exifSourceUri: String?,
+            ): String = error("legacy encode must not run")
+
+            override fun checkScratchCapacity(requiredBytes: Long) {
+                checkedBytes += requiredBytes
+                events += "capacity"
+            }
+
+            override suspend fun encodeStreaming(
+                width: Int,
+                height: Int,
+                destinationUri: String,
+                policy: ExportPolicy,
+                exifSourceUri: String?,
+                produceRows: suspend (ByteArray) -> Unit,
+            ): String {
+                events += "encoder"
+                events += "row"
+                produceRows(ByteArray(0))
+                error("row callback must reject the undersized buffer")
+            }
+        }
+        val engine = object : InferenceEngine {
+            override val backendName = "test"
+            override fun isAvailable(accelerator: Accelerator) = true
+            override fun close() = Unit
+            override fun upscaleTile(
+                input: FloatArray,
+                tileWidth: Int,
+                tileHeight: Int,
+                modelKey: InferenceEngine.ModelKey,
+            ): FloatArray = error("invalid row must fail before inference")
+        }
+
+        val progress = EnhanceImage(engine, imageIo).run(
+            request = EnhanceRequest(
+                inputUris = listOf("content://input/stream-capacity"),
+                scale = ScaleFactor.X4,
+                denoise = DenoiseStrength.OFF,
+            ),
+            outputNameFor = { _, _ -> "stream-capacity.png" },
+        ).toList()
+
+        val pngBound = sourceSide.toLong() * 4L * sourceSide * 4L * 5L
+        assertEquals(listOf("capacity", "encoder", "row"), events)
+        assertTrue(checkedBytes.single() > pngBound)
+        assertEquals("streaming row buffer size mismatch", progress.last().error)
     }
 
     @Test
