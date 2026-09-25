@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -44,7 +43,6 @@ class ComparisonViewerTest {
         showViewer(resultAvailable = true)
 
         composeRule.onNodeWithContentDescription(string(R.string.compare_handle))
-            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Adjustable))
             .assert(
                 SemanticsMatcher.expectValue(
                     SemanticsProperties.ProgressBarRangeInfo,

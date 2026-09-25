@@ -84,10 +84,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
-import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
@@ -1329,7 +1327,6 @@ fun ComparisonViewer(
                 .semantics {
                     contentDescription = handleDescription
                     stateDescription = "${(splitFraction * 100).roundToInt()}%"
-                    role = Role.Adjustable
                     progressBarRangeInfo = ProgressBarRangeInfo(splitFraction, 0f..1f)
                     setProgress { target ->
                         comparison = comparison.moveSplitTo(target)
