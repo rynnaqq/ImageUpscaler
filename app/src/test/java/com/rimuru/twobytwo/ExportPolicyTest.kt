@@ -2,7 +2,15 @@ package com.rimuru.twobytwo
 
 import com.rimuru.twobytwo.data.work.EnhanceRequestJson
 import com.rimuru.twobytwo.data.work.enhanceOutputName
+import com.rimuru.twobytwo.domain.engine.FaceBox
+import com.rimuru.twobytwo.domain.engine.FaceDetector
+import com.rimuru.twobytwo.domain.engine.FaceRestorePass
+import com.rimuru.twobytwo.domain.engine.FaceRestorer
+import com.rimuru.twobytwo.domain.engine.ImageOps
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
+import com.rimuru.twobytwo.domain.engine.ModelProvider
+import com.rimuru.twobytwo.domain.engine.PassContext
+import com.rimuru.twobytwo.domain.engine.RgbaImage
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.DenoiseStrength
 import com.rimuru.twobytwo.domain.model.EnhanceRequest
@@ -16,6 +24,7 @@ import com.rimuru.twobytwo.domain.usecase.StreamingImageIo
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -288,10 +297,120 @@ class ExportPolicyTest {
     }
 
     @Test
+    fun `streamed face restoration runs before tile sharpening`() = runBlocking {
+        var detectorCalls = 0
+        var restorerCalls = 0
+        val detector = object : FaceDetector {
+            override fun detect(image: RgbaImage): List<FaceBox> {
+                detectorCalls++
+                return listOf(FaceBox(448, 448, 128, 128))
+            }
+        }
+        val restorer = object : FaceRestorer {
+            override fun restore(crop: RgbaImage): RgbaImage {
+                restorerCalls++
+                return patternedFace(crop.width, crop.height)
+            }
+        }
+        var streamedPixel: ByteArray? = null
+        val imageIo = StreamingImageIoFake(2_048, 2_048) { rowIndex, row ->
+            if (rowIndex == 512) {
+                streamedPixel = row.copyOfRange(512 * 4, 512 * 4 + 4)
+            }
+        }
+        val progress = EnhanceImage(
+            engine = streamingEngine(),
+            imageIo = imageIo,
+            faceDetector = detector,
+            faceRestorer = restorer,
+        ).run(
+            request = EnhanceRequest(
+                inputUris = listOf("content://input/face-sharpen"),
+                scale = ScaleFactor.X4,
+                denoise = DenoiseStrength.OFF,
+                faceRestoreEnabled = true,
+                faceRestoreStrength = 100,
+                useNeuralEngine = false,
+                sharpen = true,
+            ),
+            outputNameFor = { _, _ -> "face-sharpen.png" },
+            sharpenMaxMegapixels = Double.MAX_VALUE,
+        ).toList()
+        val tileSide = 1_024
+        val facePass = FaceRestorePass(
+            strength = 100,
+            detector = detector,
+            restorer = restorer,
+        ).apply(
+            RgbaImage(opaqueBlackTile(tileSide), tileSide, tileSide),
+            PassContext(100, NoModelProvider),
+        )
+        val expected = facePass.image.pixels
+        val pixelIndex = (512 * tileSide + 512) * 4
+        val beforeSharpen = expected.copyOfRange(pixelIndex, pixelIndex + 4)
+        ImageOps.unsharpMask(expected, tileSide, tileSide, amount = 0.45f)
+        val expectedPixel = expected.copyOfRange(pixelIndex, pixelIndex + 4)
+        val actualPixel = checkNotNull(streamedPixel)
+
+        assertTrue(detectorCalls > 0)
+        assertTrue(restorerCalls > 0)
+        assertFalse(
+            "tile sharpen had no effect: actual=${actualPixel.toList()} before=${beforeSharpen.toList()} expected=${expectedPixel.toList()}",
+            actualPixel.contentEquals(beforeSharpen),
+        )
+        assertArrayEquals("face restoration must run before sharpen", expectedPixel, actualPixel)
+        assertEquals(ProcessStep.DONE, progress.last().step)
+    }
+
+    @Test
+    fun `streamed face progress never regresses overall`() = runBlocking {
+        val progress = EnhanceImage(
+            engine = streamingEngine(),
+            imageIo = StreamingImageIoFake(2_048, 2_048),
+        ).run(
+            request = EnhanceRequest(
+                inputUris = listOf("content://input/face-progress"),
+                scale = ScaleFactor.X4,
+                denoise = DenoiseStrength.OFF,
+                faceRestoreEnabled = true,
+                useNeuralEngine = false,
+                sharpen = false,
+            ),
+            outputNameFor = { _, _ -> "face-progress.png" },
+        ).toList()
+        val regressions = progress.zipWithNext().filter { (before, after) -> after.overall < before.overall }
+
+        assertTrue("overall regressions: $regressions", regressions.isEmpty())
+    }
+
+    @Test
     fun `worker output names use the requested format extension`() {
         assertEquals("photo_1.png", enhanceOutputName("photo", 0, OutputFormat.PNG))
         assertEquals("photo_1.jpg", enhanceOutputName("photo", 0, OutputFormat.JPEG))
         assertEquals("photo_1.webp", enhanceOutputName("photo", 0, OutputFormat.WEBP))
+    }
+
+    private object NoModelProvider : ModelProvider {
+        override fun load(key: InferenceEngine.ModelKey) = null
+    }
+
+    private fun opaqueBlackTile(side: Int): ByteArray = ByteArray(side * side * 4).also { pixels ->
+        for (index in 3 until pixels.size step 4) pixels[index] = 0xff.toByte()
+    }
+
+    private fun patternedFace(width: Int, height: Int): RgbaImage {
+        val pixels = ByteArray(width * height * 4)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val index = (y * width + x) * 4
+                val value = if (((x / 8) + (y / 8)) % 2 == 0) 240 else 16
+                pixels[index] = value.toByte()
+                pixels[index + 1] = value.toByte()
+                pixels[index + 2] = value.toByte()
+                pixels[index + 3] = 0xff.toByte()
+            }
+        }
+        return RgbaImage(pixels, width, height)
     }
 
     private fun streamingEngine(): InferenceEngine = object : InferenceEngine {
@@ -314,6 +433,7 @@ class ExportPolicyTest {
     private class StreamingImageIoFake(
         private val width: Int,
         private val height: Int,
+        private val rowObserver: (Int, ByteArray) -> Unit = { _, _ -> },
     ) : EnhanceImage.ImageIo, StreamingImageIo {
         var legacyEncodeCalls = 0
         var streamingWidth = 0
@@ -344,22 +464,25 @@ class ExportPolicyTest {
             return "content://legacy/$destinationUri"
         }
 
-        override fun encodeStreaming(
+        override suspend fun encodeStreaming(
             width: Int,
             height: Int,
             destinationUri: String,
             policy: ExportPolicy,
             exifSourceUri: String?,
-            produceRows: ((ByteArray) -> Unit) -> Unit,
+            produceRows: suspend (ByteArray) -> Unit,
         ): String {
             streamingWidth = width
             streamingHeight = height
             streamingDestinationUri = destinationUri
             streamingPolicy = policy
             streamingExifSourceUri = exifSourceUri
-            produceRows { row ->
+            val rowBuffer = ByteArray(Math.toIntExact(width.toLong() * 4L))
+            for (rowIndex in 0 until height) {
+                produceRows(rowBuffer)
                 rowCount++
-                rowSize = row.size
+                rowSize = rowBuffer.size
+                rowObserver(rowIndex, rowBuffer)
             }
             return "content://stream/$destinationUri"
         }

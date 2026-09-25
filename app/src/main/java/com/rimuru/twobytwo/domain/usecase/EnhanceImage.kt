@@ -25,7 +25,6 @@ import com.rimuru.twobytwo.domain.model.JobProgress
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.model.ScaleFactor
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -133,13 +132,6 @@ class EnhanceImage(
         isCancelled: () -> Boolean = { false },
         onItemCompleted: (batchIndex: Int, result: EnhanceResult) -> Unit = { _, _ -> },
     ): Flow<JobProgress> = channelFlow {
-        fun emitProgress(progress: JobProgress) {
-            val result = trySendBlocking(progress)
-            if (result.isFailure) {
-                throw result.exceptionOrNull() ?: IllegalStateException("progress channel closed")
-            }
-        }
-
         withContext(Dispatchers.Default) {
             val total = request.inputUris.size
             var succeeded = 0
@@ -172,7 +164,7 @@ class EnhanceImage(
                         isCancelled = isCancelled,
                     ) { progress ->
                         lastOverall = progress.overall
-                        emitProgress(progress)
+                        send(progress)
                     }
                     backendUsed = processed.backendUsed
                     skippedSmallFaces += processed.skippedSmallFaces
@@ -252,7 +244,7 @@ class EnhanceImage(
         batchIndex: Int,
         batchTotal: Int,
         isCancelled: () -> Boolean,
-        emit: (JobProgress) -> Unit,
+        emit: suspend (JobProgress) -> Unit,
     ): ProcessedImage {
         val jobContext = currentCoroutineContext()
         val cancellationRequested = { isCancelled() || !jobContext.isActive }
@@ -369,77 +361,115 @@ class EnhanceImage(
                         backendUsed = backendWithPasses(engine.backendName, passStatuses),
                         batchIndex = batchIndex,
                         batchTotal = batchTotal,
+                        overallOverride = JobProgress(
+                            step = ProcessStep.PROCESSING_TILES,
+                            tilesTotal = tiling.tileCount,
+                            batchIndex = batchIndex,
+                            batchTotal = batchTotal,
+                        ).overall,
                     ),
                 )
             }
 
             var faceRestoreDetail: String? = null
             var faceRestoreStatusIndex = -1
+            var nextTileIndex = 0
+            var tilesDone = 0
+            var rowsDone = 0
+            var writerFinished = false
+            val tiles = tiling.tiles()
+            val pendingRows = ArrayList<ByteArray>()
+            var writer: StreamingTileWriter? = null
+            val rowSize = Math.toIntExact(Math.multiplyExact(outputWidth, 4L))
             val encodedUri = streamingImageIo!!.encodeStreaming(
                 width = outputWidth.toInt(),
                 height = outputHeight.toInt(),
                 destinationUri = outputUri,
                 policy = request.exportPolicy,
                 exifSourceUri = inputUri,
-            ) { writeRow ->
+            ) { rowBuffer ->
                 checkPassCancellation(cancellationRequested)
-                val tiles = tiling.tiles()
-                val writer = StreamingTileWriter(tiles, tiling) { row ->
-                    checkPassCancellation(cancellationRequested)
-                    writeRow(row)
-                }
-                produceTiles(
-                    restored = restored,
-                    scale = scale,
-                    modelKey = modelKey,
-                    modelScale = modelScale,
-                    tiling = tiling,
+                require(rowBuffer.size.toLong() == rowSize.toLong()) { "streaming row buffer size mismatch" }
+                check(rowsDone < tiling.outHeight) { "streaming row count exceeds output height" }
+                val activeWriter = writer ?: StreamingTileWriter(
                     tiles = tiles,
-                    batchIndex = batchIndex,
-                    batchTotal = batchTotal,
-                    passStatuses = passStatuses,
-                    isCancelled = cancellationRequested,
-                    emit = emit,
-                ) { tileRgba, tile, tileOutW, tileOutH ->
-                    var preparedRgba = tileRgba
-                    if (request.faceRestoreEnabled) {
-                        val faceResult = FaceRestorePass(
-                            strength = request.faceRestoreStrength,
-                            detector = faceDetector,
-                            restorer = faceRestorer,
-                            isCancelled = cancellationRequested,
-                        ).apply(
-                            RgbaImage(preparedRgba, tileOutW, tileOutH),
-                            PassContext(request.faceRestoreStrength, passProvider),
+                    tiling = tiling,
+                ) { row ->
+                    pendingRows += row
+                }.also { writer = it }
+                while (pendingRows.isEmpty()) {
+                    if (nextTileIndex < tiles.size) {
+                        val tile = tiles[nextTileIndex++]
+                        tilesDone++
+                        emit(
+                            produceTile(
+                                restored = restored,
+                                scale = scale,
+                                modelKey = modelKey,
+                                modelScale = modelScale,
+                                tiling = tiling,
+                                tile = tile,
+                                tilesDone = tilesDone,
+                                batchIndex = batchIndex,
+                                batchTotal = batchTotal,
+                                passStatuses = passStatuses,
+                                isCancelled = cancellationRequested,
+                            ) { tileRgba, currentTile, tileOutW, tileOutH ->
+                                var preparedRgba = tileRgba
+                                if (request.faceRestoreEnabled) {
+                                    val faceResult = FaceRestorePass(
+                                        strength = request.faceRestoreStrength,
+                                        detector = faceDetector,
+                                        restorer = faceRestorer,
+                                        isCancelled = cancellationRequested,
+                                    ).apply(
+                                        RgbaImage(preparedRgba, tileOutW, tileOutH),
+                                        PassContext(request.faceRestoreStrength, passProvider),
+                                    )
+                                    checkPassCancellation(cancellationRequested)
+                                    require(faceResult.image.width == tileOutW && faceResult.image.height == tileOutH)
+                                    require(
+                                        faceResult.image.pixels.size.toLong() ==
+                                            tileOutW.toLong() * tileOutH.toLong() * 4L,
+                                    )
+                                    preparedRgba = faceResult.image.pixels
+                                    skippedSmallFaces += faceResult.skippedSmallFaces
+                                    if (faceRestoreStatusIndex < 0) {
+                                        faceRestoreDetail = faceResult.detail
+                                        passStatuses += "face-restore=${faceResult.detail}"
+                                        faceRestoreStatusIndex = passStatuses.lastIndex
+                                    }
+                                }
+                                if (sharpenTiles) {
+                                    ImageOps.unsharpMask(
+                                        preparedRgba,
+                                        tileOutW,
+                                        tileOutH,
+                                        amount = 0.45f,
+                                        isCancelled = cancellationRequested,
+                                    )
+                                }
+                                activeWriter.accept(preparedRgba, currentTile)
+                            },
                         )
-                        checkPassCancellation(cancellationRequested)
-                        require(faceResult.image.width == tileOutW && faceResult.image.height == tileOutH)
-                        require(
-                            faceResult.image.pixels.size.toLong() ==
-                                tileOutW.toLong() * tileOutH.toLong() * 4L,
-                        )
-                        preparedRgba = faceResult.image.pixels
-                        skippedSmallFaces += faceResult.skippedSmallFaces
-                        if (faceRestoreStatusIndex < 0) {
-                            faceRestoreDetail = faceResult.detail
-                            passStatuses += "face-restore=${faceResult.detail}"
-                            faceRestoreStatusIndex = passStatuses.lastIndex
-                        }
+                    } else {
+                        activeWriter.finish()
+                        writerFinished = true
                     }
-                    if (sharpenTiles) {
-                        ImageOps.unsharpMask(
-                            preparedRgba,
-                            tileOutW,
-                            tileOutH,
-                            amount = 0.45f,
-                            isCancelled = cancellationRequested,
-                        )
-                    }
-                    writer.accept(preparedRgba, tile)
                 }
-                checkPassCancellation(cancellationRequested)
-                writer.finish()
+                pendingRows.removeAt(0).copyInto(rowBuffer)
+                rowsDone++
+                if (rowsDone == tiling.outHeight) {
+                    check(nextTileIndex == tiles.size) { "streaming output ended before all tiles" }
+                    if (!writerFinished) {
+                        activeWriter.finish()
+                        writerFinished = true
+                    }
+                    check(pendingRows.isEmpty()) { "streaming output produced extra rows" }
+                }
             }
+            check(rowsDone == tiling.outHeight) { "streaming encoder did not consume all rows" }
+            check(writerFinished) { "streaming tile writer was not finished" }
             if (request.faceRestoreEnabled) {
                 var detail = checkNotNull(faceRestoreDetail)
                 if (detail.startsWith("face restoration seam completed")) {
@@ -568,7 +598,54 @@ class EnhanceImage(
         )
     }
 
-    private fun produceTiles(
+    private suspend fun produceTile(
+        restored: RgbaImage,
+        scale: Int,
+        modelKey: InferenceEngine.ModelKey,
+        modelScale: Int,
+        tiling: TilingManager,
+        tile: TilingManager.Tile,
+        tilesDone: Int,
+        batchIndex: Int,
+        batchTotal: Int,
+        passStatuses: List<String>,
+        isCancelled: () -> Boolean,
+        accept: suspend (ByteArray, TilingManager.Tile, Int, Int) -> Unit,
+    ): JobProgress {
+        checkPassCancellation(isCancelled)
+
+        val inPixels = tile.inW * tile.inH
+        val inTile = ByteArray(inPixels * 4)
+        copyTile(restored.pixels, restored.width, tile.inX, tile.inY, tile.inW, tile.inH, inTile)
+
+        val inChw = TensorCodec.rgbaToChw(inTile, inPixels)
+        var passW = tile.inW
+        var passH = tile.inH
+        var outChw = inChw
+        var remainingScale = scale
+        while (remainingScale > 1) {
+            val passScale = minOf(modelScale, remainingScale)
+            outChw = engine.upscaleTile(outChw, passW, passH, modelKey)
+            passW *= passScale
+            passH *= passScale
+            remainingScale /= passScale
+        }
+
+        val tileOutW = tile.inW * scale
+        val tileOutH = tile.inH * scale
+        val tileRgba = TensorCodec.chwToRgba(outChw, tileOutW, tileOutH)
+        accept(tileRgba, tile, tileOutW, tileOutH)
+        return JobProgress(
+            step = ProcessStep.PROCESSING_TILES,
+            tilesDone = tilesDone,
+            tilesTotal = tiling.tileCount,
+            backendUsed = backendWithPasses(engine.backendName, passStatuses),
+            batchIndex = batchIndex,
+            batchTotal = batchTotal,
+        )
+    }
+
+    private suspend fun produceTiles(
         restored: RgbaImage,
         scale: Int,
         modelKey: InferenceEngine.ModelKey,
@@ -579,44 +656,26 @@ class EnhanceImage(
         batchTotal: Int,
         passStatuses: List<String>,
         isCancelled: () -> Boolean,
-        emit: (JobProgress) -> Unit,
-        accept: (ByteArray, TilingManager.Tile, Int, Int) -> Unit,
+        emit: suspend (JobProgress) -> Unit,
+        accept: suspend (ByteArray, TilingManager.Tile, Int, Int) -> Unit,
     ) {
         var tilesDone = 0
         for (tile in tiles) {
-            checkPassCancellation(isCancelled)
-
-            val inPixels = tile.inW * tile.inH
-            val inTile = ByteArray(inPixels * 4)
-            copyTile(restored.pixels, restored.width, tile.inX, tile.inY, tile.inW, tile.inH, inTile)
-
-            val inChw = TensorCodec.rgbaToChw(inTile, inPixels)
-            var passW = tile.inW
-            var passH = tile.inH
-            var outChw = inChw
-            var remainingScale = scale
-            while (remainingScale > 1) {
-                val passScale = minOf(modelScale, remainingScale)
-                outChw = engine.upscaleTile(outChw, passW, passH, modelKey)
-                passW *= passScale
-                passH *= passScale
-                remainingScale /= passScale
-            }
-
-            val tileOutW = tile.inW * scale
-            val tileOutH = tile.inH * scale
-            val tileRgba = TensorCodec.chwToRgba(outChw, tileOutW, tileOutH)
-            accept(tileRgba, tile, tileOutW, tileOutH)
-
             tilesDone++
             emit(
-                JobProgress(
-                    step = ProcessStep.PROCESSING_TILES,
+                produceTile(
+                    restored = restored,
+                    scale = scale,
+                    modelKey = modelKey,
+                    modelScale = modelScale,
+                    tiling = tiling,
+                    tile = tile,
                     tilesDone = tilesDone,
-                    tilesTotal = tiling.tileCount,
-                    backendUsed = backendWithPasses(engine.backendName, passStatuses),
                     batchIndex = batchIndex,
                     batchTotal = batchTotal,
+                    passStatuses = passStatuses,
+                    isCancelled = isCancelled,
+                    accept = accept,
                 ),
             )
         }

@@ -7,6 +7,7 @@ import com.rimuru.twobytwo.domain.model.EnhanceRequest
 import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
+import com.rimuru.twobytwo.domain.usecase.StreamingImageIo
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -54,6 +55,61 @@ class EnhanceScaleTest {
     @Test
     fun `two x stays buffered above sixty four megapixels`() {
         assertFalse(EnhanceImage.shouldStreamOutput(ScaleFactor.X2, 8_000L, 8_000L))
+    }
+
+    @Test
+    fun `x4 preflight accepts output above the single buffer limit`() = runBlocking {
+        val decodeMarker = "stream-preflight-reached-decode"
+        val sourceSide = 7_500
+        val outputPixels = sourceSide.toLong() * 4L * sourceSide * 4L
+        val imageIo = object : EnhanceImage.ImageIo, StreamingImageIo {
+            override fun measure(uri: String, maxMegapixels: Int) =
+                EnhanceImage.Dimensions(sourceSide, sourceSide)
+
+            override fun decode(uri: String, maxMegapixels: Int): EnhanceImage.DecodedImage =
+                error(decodeMarker)
+
+            override fun encode(
+                rgba: ByteArray,
+                width: Int,
+                height: Int,
+                destinationUri: String,
+                policy: ExportPolicy,
+                exifSourceUri: String?,
+            ): String = error("legacy encode must not run")
+
+            override suspend fun encodeStreaming(
+                width: Int,
+                height: Int,
+                destinationUri: String,
+                policy: ExportPolicy,
+                exifSourceUri: String?,
+                produceRows: suspend (ByteArray) -> Unit,
+            ): String = error("decode must fail before streaming")
+        }
+        val engine = object : InferenceEngine {
+            override val backendName = "test"
+            override fun isAvailable(accelerator: Accelerator) = true
+            override fun close() = Unit
+
+            override fun upscaleTile(
+                input: FloatArray,
+                tileWidth: Int,
+                tileHeight: Int,
+                modelKey: InferenceEngine.ModelKey,
+            ): FloatArray = error("decode must fail before inference")
+        }
+
+        val progress = EnhanceImage(engine, imageIo).run(
+            request = EnhanceRequest(
+                inputUris = listOf("content://input/large-preflight"),
+                scale = ScaleFactor.X4,
+            ),
+            outputNameFor = { _, _ -> "large.png" },
+        ).toList()
+
+        assertTrue(outputPixels > Int.MAX_VALUE.toLong() / 4L)
+        assertEquals(decodeMarker, progress.last().error)
     }
 
     @Test
