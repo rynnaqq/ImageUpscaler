@@ -1,8 +1,9 @@
-package com.rimuru.twobytwo
+﻿package com.rimuru.twobytwo
 
 import com.rimuru.twobytwo.data.engine.ModelManifest
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.security.MessageDigest
@@ -21,10 +22,9 @@ class ModelAssetHashTest {
             val entry = ModelManifest.BUNDLED.entries.getValue(key)
             val asset = bundledAsset(entry.fileName)
 
-            assertEquals(
-                "ModelManifest.BUNDLED has no real checksum for ${entry.fileName}",
-                SHA256_PATTERN,
-                entry.sha256,
+            assertTrue(
+                "ModelManifest.BUNDLED has no real checksum for ${entry.fileName}: '${entry.sha256}'",
+                entry.sha256.matches(SHA256_PATTERN),
             )
             assertEquals(
                 "${entry.fileName} bytes do not match ModelManifest.BUNDLED " +
@@ -65,6 +65,6 @@ class ModelAssetHashTest {
     }
 
     private companion object {
-        const val SHA256_PATTERN = "[0-9a-f]{64}"
+        val SHA256_PATTERN = Regex("[0-9a-f]{64}")
     }
 }
