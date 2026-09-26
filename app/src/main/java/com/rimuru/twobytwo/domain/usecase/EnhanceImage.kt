@@ -24,7 +24,12 @@ import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.JobProgress
 import com.rimuru.twobytwo.domain.model.ProcessStep
 import com.rimuru.twobytwo.domain.model.ScaleFactor
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -49,6 +54,7 @@ class EnhanceImage(
     private val faceRestorer: FaceRestorer? = null,
     private val streamingImageIo: StreamingImageIo? = imageIo as? StreamingImageIo,
     private val streamingScratchDirectory: File = File(System.getProperty("java.io.tmpdir") ?: "."),
+    private val tileWindowFor: (TilingManager, Long) -> Int = Companion::defaultTileWindow,
 ) {
     interface ImageIo {
         fun measure(uri: String, maxMegapixels: Int): Dimensions
@@ -96,6 +102,53 @@ class EnhanceImage(
         private const val STREAMING_PNG_BYTES_PER_PIXEL = 5L
         private const val STREAMING_CODEC_MARGIN_BYTES = 1L * 1024L * 1024L
         private const val STREAMING_SAFETY_MARGIN_BYTES = 16L * 1024L * 1024L
+
+        /** Tiles in flight is capped so a big job cannot turn a slow run into an OOM. */
+        internal const val MAX_TILE_WINDOW = 4
+
+        /** Share of the heap the in-flight tiles may claim between them. */
+        internal const val TILE_WINDOW_HEAP_FRACTION = 0.25
+
+        private const val CHANNELS = 3
+        private const val BYTES_PER_FLOAT = 4
+        private const val RGBA_BYTES_PER_PIXEL = 4
+
+        /**
+         * Peak bytes one in-flight tile holds: the CHW float output the engine
+         * produces, plus the RGBA byte buffer handed to the blender.
+         */
+        internal fun tileInferenceBytes(outputPixels: Long): Long =
+            outputPixels * (CHANNELS * BYTES_PER_FLOAT + RGBA_BYTES_PER_PIXEL)
+
+        /**
+         * How many tiles to keep in flight. Bounded by the heap as well as the core
+         * count, because a 512 px tile at x4 is ~64 MB while it is being inferred —
+         * four of those on a small device is the difference between faster and an
+         * OutOfMemoryError. Always at least 1, which is the old sequential behaviour.
+         *
+         * One core is deliberately left free: the consumer still has to blend, sharpen
+         * and encode while the window infers.
+         */
+        internal fun tileWindow(heapBytes: Long, bytesPerTile: Long, cores: Int): Int {
+            if (bytesPerTile <= 0L) return 1
+            val byMemory = (heapBytes / bytesPerTile).coerceAtLeast(1L)
+            val byCores = (cores - 1).coerceAtLeast(1).toLong()
+            return minOf(byMemory, byCores)
+                .coerceIn(1L, MAX_TILE_WINDOW.toLong())
+                .toInt()
+        }
+
+        /**
+         * The window for one image, from the heap this process actually has. Injectable
+         * via the constructor so tests can force 1 (the old sequential path) or a wide
+         * window and compare the two byte for byte.
+         */
+        internal fun defaultTileWindow(tiling: TilingManager, outputPixels: Long): Int {
+            val heap = Runtime.getRuntime().maxMemory()
+            val budget = (heap.toDouble() * TILE_WINDOW_HEAP_FRACTION).toLong()
+            val perTile = tileInferenceBytes(outputPixels / tiling.tiles().size.coerceAtLeast(1))
+            return tileWindow(budget, perTile, Runtime.getRuntime().availableProcessors())
+        }
 
         private data class ScratchGroup(
             val startY: Long,
@@ -475,6 +528,19 @@ class EnhanceImage(
             var rowsDone = 0
             val rowSize = Math.toIntExact(Math.multiplyExact(outputWidth, 4L))
             val writer = StreamingTileWriter(tiles, tiling, streamingScratchDirectory)
+            val window = tileWindowFor(tiling, outputWidth * outputHeight)
+            if (window > 1) passStatuses += "tiles-parallel=$window"
+            val pendingTiles = ArrayDeque<Pair<TilingManager.Tile, Deferred<Result<InferredTile>>>>()
+            val tileScope = CoroutineScope(currentCoroutineContext())
+            val tileDispatcher = tileDispatcher(window)
+            fun launchTile(tile: TilingManager.Tile) {
+                pendingTiles.addLast(
+                    tile to tileScope.async(tileDispatcher) {
+                        guard { inferTile(restored, scale, modelKey, modelScale, tile, cancellationRequested) }
+                    },
+                )
+            }
+            launchTile(tiles[nextTileIndex++])
             var processingFailure: Throwable? = null
             val encodedUri = try {
                 val encoded = streamingIo.encodeStreaming(
@@ -488,62 +554,61 @@ class EnhanceImage(
                     require(rowBuffer.size.toLong() == rowSize.toLong()) { "streaming row buffer size mismatch" }
                     check(rowsDone < tiling.outHeight) { "streaming row count exceeds output height" }
                     while (!writer.isRowReady(rowsDone)) {
-                        check(nextTileIndex < tiles.size) {
+                        check(nextTileIndex < tiles.size || pendingTiles.isNotEmpty()) {
                             "streaming row is not ready before all tiles were accepted"
                         }
-                        val tile = tiles[nextTileIndex++]
+                        if (pendingTiles.isEmpty()) launchTile(tiles[nextTileIndex++])
+                        val (currentTile, deferred) = pendingTiles.removeFirst()
+                        val inferred = deferred.await().getOrElse { throw it }
                         tilesDone++
+                        var preparedRgba = inferred.rgba
+                        if (request.faceRestoreEnabled) {
+                            val faceResult = FaceRestorePass(
+                                strength = request.faceRestoreStrength,
+                                detector = faceDetector,
+                                restorer = faceRestorer,
+                                isCancelled = cancellationRequested,
+                            ).apply(
+                                RgbaImage(preparedRgba, inferred.width, inferred.height),
+                                PassContext(request.faceRestoreStrength, passProvider),
+                            )
+                            checkPassCancellation(cancellationRequested)
+                            require(faceResult.image.width == inferred.width && faceResult.image.height == inferred.height)
+                            require(
+                                faceResult.image.pixels.size.toLong() ==
+                                    inferred.width.toLong() * inferred.height.toLong() * 4L,
+                            )
+                            preparedRgba = faceResult.image.pixels
+                            skippedSmallFaces += faceResult.skippedSmallFaces
+                            if (faceRestoreStatusIndex < 0) {
+                                faceRestoreDetail = faceResult.detail
+                                passStatuses += "face-restore=${faceResult.detail}"
+                                faceRestoreStatusIndex = passStatuses.lastIndex
+                            }
+                        }
+                        if (sharpenTiles) {
+                            ImageOps.unsharpMask(
+                                preparedRgba,
+                                inferred.width,
+                                inferred.height,
+                                amount = 0.45f,
+                                isCancelled = cancellationRequested,
+                            )
+                        }
+                        writer.accept(preparedRgba, currentTile)
                         emit(
-                            produceTile(
-                                restored = restored,
-                                scale = scale,
-                                modelKey = modelKey,
-                                modelScale = modelScale,
-                                tiling = tiling,
-                                tile = tile,
+                            JobProgress(
+                                step = ProcessStep.PROCESSING_TILES,
                                 tilesDone = tilesDone,
+                                tilesTotal = tiling.tileCount,
+                                backendUsed = backendWithPasses(engine.backendName, passStatuses),
                                 batchIndex = batchIndex,
                                 batchTotal = batchTotal,
-                                passStatuses = passStatuses,
-                                isCancelled = cancellationRequested,
-                            ) { tileRgba, currentTile, tileOutW, tileOutH ->
-                                var preparedRgba = tileRgba
-                                if (request.faceRestoreEnabled) {
-                                    val faceResult = FaceRestorePass(
-                                        strength = request.faceRestoreStrength,
-                                        detector = faceDetector,
-                                        restorer = faceRestorer,
-                                        isCancelled = cancellationRequested,
-                                    ).apply(
-                                        RgbaImage(preparedRgba, tileOutW, tileOutH),
-                                        PassContext(request.faceRestoreStrength, passProvider),
-                                    )
-                                    checkPassCancellation(cancellationRequested)
-                                    require(faceResult.image.width == tileOutW && faceResult.image.height == tileOutH)
-                                    require(
-                                        faceResult.image.pixels.size.toLong() ==
-                                            tileOutW.toLong() * tileOutH.toLong() * 4L,
-                                    )
-                                    preparedRgba = faceResult.image.pixels
-                                    skippedSmallFaces += faceResult.skippedSmallFaces
-                                    if (faceRestoreStatusIndex < 0) {
-                                        faceRestoreDetail = faceResult.detail
-                                        passStatuses += "face-restore=${faceResult.detail}"
-                                        faceRestoreStatusIndex = passStatuses.lastIndex
-                                    }
-                                }
-                                if (sharpenTiles) {
-                                    ImageOps.unsharpMask(
-                                        preparedRgba,
-                                        tileOutW,
-                                        tileOutH,
-                                        amount = 0.45f,
-                                        isCancelled = cancellationRequested,
-                                    )
-                                }
-                                writer.accept(preparedRgba, currentTile)
-                            },
+                            ),
                         )
+                        if (nextTileIndex < tiles.size && pendingTiles.size < window) {
+                            launchTile(tiles[nextTileIndex++])
+                        }
                     }
                     writer.writeRow(rowBuffer, rowsDone)
                     rowsDone++
@@ -600,20 +665,28 @@ class EnhanceImage(
         }
 
         var out = ByteArray(outputBytes)
-        produceTiles(
-            restored = restored,
-            scale = scale,
-            modelKey = modelKey,
-            modelScale = modelScale,
-            tiling = tiling,
-            tiles = tiling.tiles(),
-            batchIndex = batchIndex,
-            batchTotal = batchTotal,
-            passStatuses = passStatuses,
-            isCancelled = cancellationRequested,
-            emit = emit,
-        ) { tileRgba, tile, _, _ ->
-            TileBlender.blend(tileRgba, tile, tiling, out, tiling.outWidth)
+        val tiles = tiling.tiles()
+        val window = tileWindowFor(tiling, outputWidth * outputHeight)
+        if (window > 1) passStatuses += "tiles-parallel=$window"
+        var tilesDone = 0
+        forEachOrderedWindowed(
+            items = tiles,
+            window = window,
+            dispatcher = tileDispatcher(window),
+            produce = { tile -> inferTile(restored, scale, modelKey, modelScale, tile, cancellationRequested) },
+        ) { tile, inferred ->
+            tilesDone++
+            TileBlender.blend(inferred.rgba, tile, tiling, out, tiling.outWidth)
+            emit(
+                JobProgress(
+                    step = ProcessStep.PROCESSING_TILES,
+                    tilesDone = tilesDone,
+                    tilesTotal = tiling.tileCount,
+                    backendUsed = backendWithPasses(engine.backendName, passStatuses),
+                    batchIndex = batchIndex,
+                    batchTotal = batchTotal,
+                ),
+            )
         }
 
         if (request.faceRestoreEnabled) {
@@ -691,20 +764,22 @@ class EnhanceImage(
         )
     }
 
-    private suspend fun produceTile(
+    /** One upscaled tile, ready to blend. Holds no reference to the source image. */
+    private class InferredTile(val rgba: ByteArray, val width: Int, val height: Int)
+
+    /**
+     * The expensive half of a tile: cut it out, run the neural passes, convert back.
+     * Deliberately free of ordering so it can run on any thread — everything that
+     * depends on tile order happens in the consumer.
+     */
+    private fun inferTile(
         restored: RgbaImage,
         scale: Int,
         modelKey: InferenceEngine.ModelKey,
         modelScale: Int,
-        tiling: TilingManager,
         tile: TilingManager.Tile,
-        tilesDone: Int,
-        batchIndex: Int,
-        batchTotal: Int,
-        passStatuses: List<String>,
         isCancelled: () -> Boolean,
-        accept: suspend (ByteArray, TilingManager.Tile, Int, Int) -> Unit,
-    ): JobProgress {
+    ): InferredTile {
         checkPassCancellation(isCancelled)
 
         val inPixels = tile.inW * tile.inH
@@ -726,53 +801,62 @@ class EnhanceImage(
 
         val tileOutW = tile.inW * scale
         val tileOutH = tile.inH * scale
-        val tileRgba = TensorCodec.chwToRgba(outChw, tileOutW, tileOutH)
-        accept(tileRgba, tile, tileOutW, tileOutH)
-        return JobProgress(
-            step = ProcessStep.PROCESSING_TILES,
-            tilesDone = tilesDone,
-            tilesTotal = tiling.tileCount,
-            backendUsed = backendWithPasses(engine.backendName, passStatuses),
-            batchIndex = batchIndex,
-            batchTotal = batchTotal,
-        )
+        return InferredTile(TensorCodec.chwToRgba(outChw, tileOutW, tileOutH), tileOutW, tileOutH)
     }
 
-    private suspend fun produceTiles(
-        restored: RgbaImage,
-        scale: Int,
-        modelKey: InferenceEngine.ModelKey,
-        modelScale: Int,
-        tiling: TilingManager,
-        tiles: List<TilingManager.Tile>,
-        batchIndex: Int,
-        batchTotal: Int,
-        passStatuses: List<String>,
-        isCancelled: () -> Boolean,
-        emit: suspend (JobProgress) -> Unit,
-        accept: suspend (ByteArray, TilingManager.Tile, Int, Int) -> Unit,
+    /**
+     * Runs [produce] over [items] with at most [window] results alive at once, then
+     * hands them to [consume] strictly in the original order.
+     *
+     * Order is the whole point. TileBlender blends each tile's feathered ramp against
+     * what neighbouring tiles already wrote, and StreamingTileWriter rejects a tile
+     * that is not the one it expects next — so consuming out of order would corrupt
+     * every seam. Inferring in parallel is safe; blending stays exactly as it was.
+     *
+     * Failures are captured rather than thrown on the worker so that one bad tile
+     * cannot cancel its siblings, then rethrown on the consumer — which keeps the
+     * existing per-image error handling and the OOM/cancellation contract intact.
+     */
+    private suspend fun <I, O> forEachOrderedWindowed(
+        items: List<I>,
+        window: Int,
+        dispatcher: CoroutineDispatcher,
+        produce: (I) -> O,
+        consume: suspend (I, O) -> Unit,
     ) {
-        var tilesDone = 0
-        for (tile in tiles) {
-            tilesDone++
-            emit(
-                produceTile(
-                    restored = restored,
-                    scale = scale,
-                    modelKey = modelKey,
-                    modelScale = modelScale,
-                    tiling = tiling,
-                    tile = tile,
-                    tilesDone = tilesDone,
-                    batchIndex = batchIndex,
-                    batchTotal = batchTotal,
-                    passStatuses = passStatuses,
-                    isCancelled = isCancelled,
-                    accept = accept,
-                ),
-            )
+        if (items.isEmpty()) return
+        val scope = CoroutineScope(currentCoroutineContext())
+        val pending = ArrayDeque<Deferred<Result<O>>>()
+        var launched = 0
+
+        fun launch(item: I) {
+            pending.addLast(scope.async(dispatcher) { guard { produce(item) } })
+        }
+
+        repeat(minOf(window, items.size)) {
+            launch(items[launched])
+            launched++
+        }
+        for (item in items) {
+            val outcome = pending.removeFirst().await()
+            consume(item, outcome.getOrElse { throw it })
+            if (launched < items.size) {
+                launch(items[launched])
+                launched++
+            }
         }
     }
+
+    private inline fun <T> guard(block: () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (t: Throwable) {
+        Result.failure(t)
+    }
+
+    private fun tileDispatcher(window: Int): CoroutineDispatcher =
+        if (window > 1) Dispatchers.Default.limitedParallelism(window) else Dispatchers.Default
 
     private fun backendWithPasses(backend: String, passStatuses: List<String>): String =
         if (passStatuses.isEmpty()) backend else "$backend; ${passStatuses.joinToString("; ")}"

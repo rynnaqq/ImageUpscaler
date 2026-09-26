@@ -27,10 +27,17 @@ class OnnxInferenceEngine(
     constructor(context: Context, manifest: ModelManifest) : this(ModelRegistry(context, manifest))
 
     private val env: OrtEnvironment by lazy(environmentFactory)
-    private val sessions = mutableMapOf<InferenceEngine.ModelKey, OrtSession>()
-    private val sessionBackends = mutableMapOf<InferenceEngine.ModelKey, String>()
-    private val backendStatus = mutableMapOf<InferenceEngine.ModelKey, String>()
+
+    // Tiles are inferred concurrently, so every map the engine touches during a run
+    // must tolerate parallel writes. A plain HashMap can corrupt itself here, which
+    // would surface as a phantom "model unavailable" rather than a crash.
+    private val sessions = java.util.concurrent.ConcurrentHashMap<InferenceEngine.ModelKey, OrtSession>()
+    private val sessionBackends = java.util.concurrent.ConcurrentHashMap<InferenceEngine.ModelKey, String>()
+    private val backendStatus = java.util.concurrent.ConcurrentHashMap<InferenceEngine.ModelKey, String>()
+
+    @Volatile
     private var activeModelKey: InferenceEngine.ModelKey? = null
+    private val sessionLock = Any()
     private var closed = false
 
     override val backendName: String
@@ -143,38 +150,47 @@ class OnnxInferenceEngine(
             activateSession(modelKey)
             return it
         }
-        val handle = try {
-            modelProvider.load(modelKey)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: OutOfMemoryError) {
-            throw e
-        } catch (t: Throwable) {
-            markFallback(modelKey, "model load failed${reasonSuffix(t)}")
-            null
-        } ?: run {
-            markFallback(modelKey, "model unavailable (${modelKey.assetName})")
-            return null
-        }
-
-        return try {
-            val path = handle.modelPath
-            if (path.isNullOrBlank()) {
-                markFallback(modelKey, "invalid model handle (${modelKey.assetName})")
-                null
-            } else {
-                val session = createSession(path)
-                sessions[modelKey] = session
-                markSession(modelKey, handle.backendName)
-                session
+        // Concurrent tiles race here: without the lock the first window of tiles would
+        // each miss the cache and each build a session for the same model, leaking all
+        // but one. The lock is only on the cold path, so the hit above stays lock-free.
+        synchronized(sessionLock) {
+            sessions[modelKey]?.let {
+                activateSession(modelKey)
+                return it
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: OutOfMemoryError) {
-            throw e
-        } catch (t: Throwable) {
-            markFallback(modelKey, "${handle.backendName} session unavailable${reasonSuffix(t)}")
-            null
+            val handle = try {
+                modelProvider.load(modelKey)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: OutOfMemoryError) {
+                throw e
+            } catch (t: Throwable) {
+                markFallback(modelKey, "model load failed${reasonSuffix(t)}")
+                null
+            } ?: run {
+                markFallback(modelKey, "model unavailable (${modelKey.assetName})")
+                return null
+            }
+
+            return try {
+                val path = handle.modelPath
+                if (path.isNullOrBlank()) {
+                    markFallback(modelKey, "invalid model handle (${modelKey.assetName})")
+                    null
+                } else {
+                    val session = createSession(path)
+                    sessions[modelKey] = session
+                    markSession(modelKey, handle.backendName)
+                    session
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: OutOfMemoryError) {
+                throw e
+            } catch (t: Throwable) {
+                markFallback(modelKey, "${handle.backendName} session unavailable${reasonSuffix(t)}")
+                null
+            }
         }
     }
 
@@ -182,6 +198,17 @@ class OnnxInferenceEngine(
         val options = OrtSession.SessionOptions()
         var session: OrtSession? = null
         return try {
+            options.apply {
+                // EnhanceImage runs several tiles at once, and the cores are already
+                // spoken for. Leaving ORT at its default (one intra-op thread per core
+                // per session.run) would give N tiles x N threads and oversubscribe the
+                // CPU, which is slower than either setting alone. One thread per run,
+                // parallelism at the tile level instead.
+                setIntraOpNumThreads(1)
+                setInterOpNumThreads(1)
+                setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
+                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            }
             env.createSession(path, options).also { session = it }
         } catch (e: CancellationException) {
             closeSession(session)
