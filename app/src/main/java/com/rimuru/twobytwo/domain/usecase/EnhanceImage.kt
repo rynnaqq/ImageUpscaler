@@ -56,6 +56,15 @@ class EnhanceImage(
         /** Decode input to RGBA_8888 bytes; returns dims. */
         fun decode(uri: String, maxMegapixels: Int): DecodedImage
 
+        /**
+         * Decode using dimensions the caller already measured. Measuring is not free
+         * — on a content:// uri it opens the stream twice and parses Exif — so the
+         * pipeline hands back what it got from [measure] instead of paying for it
+         * twice. Implementations that cannot use the hint fall back to measuring.
+         */
+        fun decode(uri: String, maxMegapixels: Int, dimensions: Dimensions): DecodedImage =
+            decode(uri, maxMegapixels)
+
         /** Encode RGBA to PNG or JPEG(q>=95) at destination, copying Exif. */
         fun encode(
             rgba: ByteArray,
@@ -71,7 +80,11 @@ class EnhanceImage(
         val megapixels: Double get() = width.toLong() * height / 1_000_000.0
     }
 
-    data class Dimensions(val width: Int, val height: Int)
+    /**
+     * @param orientation raw Exif orientation tag value (1 when upright/absent).
+     *   Carried so decode can honour rotation without re-reading the Exif block.
+     */
+    data class Dimensions(val width: Int, val height: Int, val orientation: Int = 1)
 
     data class TileConfig(val tileSize: Int = 256)
 
@@ -341,7 +354,7 @@ class EnhanceImage(
             }
         }
 
-        val decoded = imageIo.decode(inputUri, maxMegapixels)
+        val decoded = imageIo.decode(inputUri, maxMegapixels, dimensions)
         checkPassCancellation(cancellationRequested)
         val working = request.cropPreset?.let { preset ->
             CropProcessor.centerCrop(RgbaImage(decoded.rgba, decoded.width, decoded.height), preset)

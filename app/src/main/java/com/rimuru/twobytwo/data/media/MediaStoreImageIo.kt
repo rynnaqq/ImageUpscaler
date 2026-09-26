@@ -62,11 +62,23 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo, St
         return EnhanceImage.Dimensions(
             width = if (swapsDimensions) opts.outHeight else opts.outWidth,
             height = if (swapsDimensions) opts.outWidth else opts.outHeight,
+            orientation = orientation,
         )
     }
 
-    override fun decode(uri: String, maxMegapixels: Int): EnhanceImage.DecodedImage {
-        val dimensions = measure(uri, maxMegapixels)
+    override fun decode(uri: String, maxMegapixels: Int): EnhanceImage.DecodedImage =
+        decode(uri, maxMegapixels, measure(uri, maxMegapixels))
+
+    /**
+     * Uses the caller's [dimensions] instead of re-measuring. The pipeline already
+     * measured this exact uri a moment ago, and measuring means two more content
+     * stream opens plus another Exif parse — per photo, for an answer we already had.
+     */
+    override fun decode(
+        uri: String,
+        maxMegapixels: Int,
+        dimensions: EnhanceImage.Dimensions,
+    ): EnhanceImage.DecodedImage {
         val resolver = context.contentResolver
         var sample = 1
         while (dimensions.width.toLong() * dimensions.height / (sample.toLong() * sample) > maxMegapixels.toLong() * 1_000_000L) {
@@ -80,10 +92,8 @@ class MediaStoreImageIo(private val context: Context) : EnhanceImage.ImageIo, St
             BitmapFactory.decodeStream(it, null, decodeOpts)
         } ?: error("decode failed for $uri")
 
-        // Honor Exif orientation
-        val oriented = when (
-            resolver.openInputStream(Uri.parse(uri))!!.use { ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1) }
-        ) {
+        // Honor Exif orientation, using the orientation measure() already read.
+        val oriented = when (dimensions.orientation) {
             ExifInterface.ORIENTATION_ROTATE_90 -> rotate(bitmap, 90f)
             ExifInterface.ORIENTATION_ROTATE_180 -> rotate(bitmap, 180f)
             ExifInterface.ORIENTATION_ROTATE_270 -> rotate(bitmap, 270f)
