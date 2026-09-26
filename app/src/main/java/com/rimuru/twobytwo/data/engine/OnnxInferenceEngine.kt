@@ -190,8 +190,18 @@ class OnnxInferenceEngine(
         }
     }
 
-    private fun reasonSuffix(t: Throwable): String =
-        t.message?.takeIf { it.isNotBlank() }?.let { ": ${it.take(80)}" } ?: ""
+    /**
+     * Names the exception class as well as its message. A per-tile failure degrades
+     * that one tile to bicubic and the job continues, so without the class name a
+     * genuine bug (IndexOutOfBoundsException, ClassCastException) was indistinguishable
+     * from a legitimately unavailable model — the status string is the only place it
+     * surfaces.
+     */
+    private fun reasonSuffix(t: Throwable): String {
+        val type = t::class.java.simpleName.ifBlank { "Throwable" }
+        val detail = t.message?.takeIf { it.isNotBlank() }?.let { ": ${it.take(80)}" }.orEmpty()
+        return " ($type)$detail"
+    }
 
     private fun markSession(modelKey: InferenceEngine.ModelKey, backend: String) {
         sessionBackends[modelKey] = backend
