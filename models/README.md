@@ -160,11 +160,14 @@ cause the classical fallback until real SHA-256 values are supplied.
 The two shipped FP32 models already measure **134,358,589 bytes ≈ 128.1 MiB**
 uncompressed — the earlier "25–60 MB total" estimate assumed FP16 and a six-model
 set, and it does not hold for what is actually bundled. v1.0 still ships
-**in-base** (assets/): the Play 200 MB AAB download-size limit is measured on the
-compressed artifact, and ONNX weights compress poorly enough that this needs
-re-measuring on a real release build before adding the remaining four models.
-Move to **Play Asset Delivery** as soon as a third model lands, or if the measured
-compressed base approaches 200 MB.
+**in-base** (assets/).
+
+The Play 200 MB AAB limit is measured on the **compressed** artifact, and that
+figure has **not been measured** for this bundle. How much the two ONNX files
+shrink under AAB compression is unknown, so headroom is unknown. Before adding
+another model, measure the compressed base on a real release build and decide
+in-base vs **Play Asset Delivery** from that number. The decision threshold is
+the measurement, not a third model.
 
 ## Provenance log (required per PRD Risk #1)
 

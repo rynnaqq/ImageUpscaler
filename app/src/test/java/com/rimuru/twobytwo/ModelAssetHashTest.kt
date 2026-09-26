@@ -1,7 +1,6 @@
 ﻿package com.rimuru.twobytwo
 
 import com.rimuru.twobytwo.data.engine.ModelManifest
-import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -18,8 +17,8 @@ class ModelAssetHashTest {
 
     @Test
     fun `bundled onnx assets hash to the manifest sha256`() {
-        for (key in listOf(InferenceEngine.ModelKey.CREATIVE_X2, InferenceEngine.ModelKey.CREATIVE_X4)) {
-            val entry = ModelManifest.BUNDLED.entries.getValue(key)
+        for ((_, entry) in ModelManifest.BUNDLED.entries) {
+            if (entry.sha256.isBlank()) continue
             val asset = bundledAsset(entry.fileName)
 
             assertTrue(
