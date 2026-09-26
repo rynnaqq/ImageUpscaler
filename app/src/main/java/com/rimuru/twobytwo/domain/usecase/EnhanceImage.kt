@@ -529,7 +529,6 @@ class EnhanceImage(
             val rowSize = Math.toIntExact(Math.multiplyExact(outputWidth, 4L))
             val writer = StreamingTileWriter(tiles, tiling, streamingScratchDirectory)
             val window = tileWindowFor(tiling, outputWidth * outputHeight)
-            if (window > 1) passStatuses += "tiles-parallel=$window"
             val pendingTiles = ArrayDeque<Pair<TilingManager.Tile, Deferred<Result<InferredTile>>>>()
             val tileScope = CoroutineScope(currentCoroutineContext())
             val tileDispatcher = tileDispatcher(window)
@@ -667,7 +666,6 @@ class EnhanceImage(
         var out = ByteArray(outputBytes)
         val tiles = tiling.tiles()
         val window = tileWindowFor(tiling, outputWidth * outputHeight)
-        if (window > 1) passStatuses += "tiles-parallel=$window"
         var tilesDone = 0
         forEachOrderedWindowed(
             items = tiles,
