@@ -5,6 +5,7 @@ import ai.onnxruntime.OrtSession
 import android.content.Context
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
 import com.rimuru.twobytwo.domain.engine.ModelProvider
+import com.rimuru.twobytwo.domain.engine.TensorCodec
 import com.rimuru.twobytwo.domain.model.Accelerator
 import com.rimuru.twobytwo.domain.model.ModelProfile
 import kotlinx.coroutines.CancellationException
@@ -70,8 +71,17 @@ class OnnxInferenceEngine(
             ?: return bicubicFallback(input, tileWidth, tileHeight, modelKey)
 
         return try {
-            val shape = longArrayOf(1, 3, tileHeight.toLong(), tileWidth.toLong())
-            val tensor = ai.onnxruntime.OnnxTensor.createTensor(env, FloatBuffer.wrap(input), shape)
+            val scale = InferenceEngine.scaleFor(modelKey)
+            val even = evenTileRequired(modelKey)
+            val runWidth = if (even) tileWidth + (tileWidth and 1) else tileWidth
+            val runHeight = if (even) tileHeight + (tileHeight and 1) else tileHeight
+            val source = if (runWidth == tileWidth && runHeight == tileHeight) {
+                input
+            } else {
+                TensorCodec.padChwToEven(input, tileWidth, tileHeight)
+            }
+            val shape = longArrayOf(1, 3, runHeight.toLong(), runWidth.toLong())
+            val tensor = ai.onnxruntime.OnnxTensor.createTensor(env, FloatBuffer.wrap(source), shape)
             tensor.use {
                 session.run(mapOf(session.inputNames.first() to it)).use { results ->
                     @Suppress("UNCHECKED_CAST")
@@ -84,7 +94,10 @@ class OnnxInferenceEngine(
                             System.arraycopy(outTensor[0][c][y], 0, flat, c * outH * outW + y * outW, outW)
                         }
                     }
-                    flat
+                    // Only a padded (odd) x2 tile grows the output. Callers size their
+                    // read from the requested tile, so drop the padded tail; anything
+                    // else keeps the existing "return what the model produced" path.
+                    cropPaddedTail(flat, outW, outH, tileWidth, tileHeight, scale)
                 }
             }
         } catch (e: CancellationException) {
@@ -225,5 +238,41 @@ class OnnxInferenceEngine(
             } catch (_: Throwable) {
             }
         }
+    }
+}
+
+/**
+ * True when the bundled graph for [modelKey] cannot run odd tile dimensions and
+ * needs [TensorCodec.padChwToEven] first.
+ *
+ * `realesrgan_compact_x2.onnx` ends in a reshape-based pixel shuffle
+ * (3x Reshape + 3x Unsqueeze + 1x Transpose) that requires even H/W;
+ * `realesrgan_compact_x4.onnx` has no Reshape/Unsqueeze/Transpose at all and
+ * upsamples with 2x Resize, so it handles odd tiles unchanged.
+ */
+internal fun evenTileRequired(modelKey: InferenceEngine.ModelKey): Boolean =
+    modelKey == InferenceEngine.ModelKey.CREATIVE_X2
+
+/**
+ * Drop the padded tail from a model output so the engine always hands back
+ * exactly `3 * tileHeight * scale * tileWidth * scale`, which is what
+ * `TensorCodec.chwToRgba` and the seam blender read. Returns [output] untouched
+ * when the model produced no more than the requested tile, so an even tile and
+ * an unexpected small output keep their previous behaviour.
+ */
+internal fun cropPaddedTail(
+    output: FloatArray,
+    outWidth: Int,
+    outHeight: Int,
+    tileWidth: Int,
+    tileHeight: Int,
+    scale: Int,
+): FloatArray {
+    val wantWidth = tileWidth * scale
+    val wantHeight = tileHeight * scale
+    return if (outWidth <= wantWidth && outHeight <= wantHeight) {
+        output
+    } else {
+        TensorCodec.cropChw(output, outWidth, outHeight, wantWidth, wantHeight)
     }
 }

@@ -1,0 +1,6 @@
+# Bundled neural weights are opaque binary blobs that ModelRegistry verifies by
+# SHA-256 at load time. `binary` expands to `-diff -merge -text`, so a checkout
+# with core.autocrlf=true on Windows can never rewrite the bytes and break the
+# manifest checksum (which would silently demote every model to the classical
+# fallback). Renormalize with: git add --renormalize .
+*.onnx binary

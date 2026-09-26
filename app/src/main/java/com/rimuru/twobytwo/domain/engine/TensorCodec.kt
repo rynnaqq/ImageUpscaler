@@ -40,6 +40,78 @@ object TensorCodec {
         return out
     }
 
+    /**
+     * Grow a CHW tile to even width and height by replicating the last row and
+     * the last column. The bundled CREATIVE_X2 graph ends in a reshape-based
+     * pixel shuffle that cannot run odd H/W, and `TilingManager` hands the engine
+     * odd tiles whenever the image width or height is odd.
+     *
+     * @return the input unchanged when both dimensions are already even.
+     */
+    fun padChwToEven(input: FloatArray, width: Int, height: Int): FloatArray {
+        require(width > 0 && height > 0) { "tile dims must be positive, got ${width}x$height" }
+        val paddedWidth = width + (width and 1)
+        val paddedHeight = height + (height and 1)
+        if (paddedWidth == width && paddedHeight == height) return input
+        require(input.size >= 3 * width * height) { "buffer too small: ${input.size} < ${3 * width * height}" }
+
+        val out = FloatArray(3 * paddedWidth * paddedHeight)
+        for (c in 0 until 3) {
+            val src = c * width * height
+            val dst = c * paddedWidth * paddedHeight
+            for (y in 0 until height) {
+                System.arraycopy(input, src + y * width, out, dst + y * paddedWidth, width)
+            }
+            if (paddedWidth > width) {
+                for (y in 0 until height) {
+                    out[dst + y * paddedWidth + width] = input[src + y * width + width - 1]
+                }
+            }
+        }
+        if (paddedHeight > height) {
+            val lastRow = (height - 1) * paddedWidth
+            for (c in 0 until 3) {
+                val dst = c * paddedWidth * paddedHeight
+                System.arraycopy(out, dst + lastRow, out, dst + height * paddedWidth, paddedWidth)
+            }
+        }
+        return out
+    }
+
+    /**
+     * Crop the top-left [outWidth]x[outHeight] corner out of a CHW plane, undoing
+     * [padChwToEven] after inference. The engine contract is exactly
+     * `3 * h * scale * w * scale` samples, and callers such as
+     * `TensorCodec.chwToRgba` size their read from the requested tile, so the
+     * padded tail must be dropped here.
+     *
+     * @return the input unchanged when the requested size already matches.
+     */
+    fun cropChw(
+        input: FloatArray,
+        width: Int,
+        height: Int,
+        outWidth: Int,
+        outHeight: Int,
+    ): FloatArray {
+        require(width > 0 && height > 0) { "plane dims must be positive, got ${width}x$height" }
+        require(outWidth in 1..width && outHeight in 1..height) {
+            "crop ${outWidth}x$outHeight must fit inside ${width}x$height"
+        }
+        if (outWidth == width && outHeight == height) return input
+        require(input.size >= 3 * width * height) { "buffer too small: ${input.size} < ${3 * width * height}" }
+
+        val out = FloatArray(3 * outWidth * outHeight)
+        for (c in 0 until 3) {
+            val src = c * width * height
+            val dst = c * outWidth * outHeight
+            for (y in 0 until outHeight) {
+                System.arraycopy(input, src + y * width, out, dst + y * outWidth, outWidth)
+            }
+        }
+        return out
+    }
+
     private fun toByte(v: Float): Byte {
         val i = (v.coerceIn(0f, 1f) * 255f).roundToInt()
         return i.toByte()
