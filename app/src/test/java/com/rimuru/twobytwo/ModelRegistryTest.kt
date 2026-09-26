@@ -21,6 +21,23 @@ import java.nio.file.Files
 class ModelRegistryTest {
 
     @Test
+    fun `bundled creative models use verified assets while unsupported keys stay placeholders`() {
+        val bundled = ModelManifest.BUNDLED
+
+        assertEquals("realesrgan_compact_x2.onnx", bundled.entries.getValue(InferenceEngine.ModelKey.CREATIVE_X2).fileName)
+        assertEquals(
+            "fb3ce45a465b7b5a30a6c6ae8aa09cd0df192824fefdb07e16bae0af18ef60e9",
+            bundled.entries.getValue(InferenceEngine.ModelKey.CREATIVE_X2).sha256,
+        )
+        assertEquals("realesrgan_compact_x4.onnx", bundled.entries.getValue(InferenceEngine.ModelKey.CREATIVE_X4).fileName)
+        assertEquals(
+            "01be1ebcddc7a08663818ac96e7ab95e4f2c812aa4423c9b7e2e59a716a6626c",
+            bundled.entries.getValue(InferenceEngine.ModelKey.CREATIVE_X4).sha256,
+        )
+        assertEquals("", bundled.entries.getValue(InferenceEngine.ModelKey.SCRATCH_REPAIR).sha256)
+    }
+
+    @Test
     fun `missing asset returns null`() {
         val key = InferenceEngine.ModelKey.CREATIVE_X2
         val cache = Files.createTempDirectory("model-registry-missing").toFile()

@@ -2,9 +2,20 @@
 
 The app ships neural models as **versioned assets** in `app/src/main/assets/models/`,
 verified by sha256 at load time (PRD §5.5). This guide covers converting, verifying,
-and registering models. **The current repo ships no real models** — the engine falls
-back to bilinear upscaling until you place real `.onnx` files here (FR-1.3 graceful
-degradation, shown to the user as "fast mode used").
+and registering models. The creative 2× and 4× Real-ESRGAN exports are now bundled;
+unsupported model families still use the classical fallback until verified assets
+are added (FR-1.3 graceful degradation, shown to the user as "fast mode used").
+
+## Bundled assets in this workspace
+
+The two creative upscaler exports are bundled in `app/src/main/assets/models/`:
+
+| File | Version | SHA-256 |
+|---|---|---|
+| `realesrgan_compact_x2.onnx` | `2plus-fp32-op20` | `fb3ce45a465b7b5a30a6c6ae8aa09cd0df192824fefdb07e16bae0af18ef60e9` |
+| `realesrgan_compact_x4.onnx` | `4plus-fp32-op20` | `01be1ebcddc7a08663818ac96e7ab95e4f2c812aa4423c9b7e2e59a716a6626c` |
+
+The remaining model keys intentionally retain blank checksums and use the classical fallback. Confirm the upstream Real-ESRGAN BSD-3 license and conversion provenance before distributing the binaries.
 
 ## Required files
 

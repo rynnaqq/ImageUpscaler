@@ -14,12 +14,14 @@ jobs with foreground notifications, MediaStore export, EN/ID localization.
 Open in **Android Studio** (Koala+, AGP 8.5, JDK 17) and run the `app` config.
 No API keys, no network needed at build or runtime.
 
-## What works without model files
+## What works without additional model files
 
-Everything except neural quality: the pipeline runs end-to-end, but
-`OnnxInferenceEngine` falls back to bilinear upscaling when a model asset is
-missing/corrupt (PRD §5.5 graceful degradation). Place converted models per
-[`models/README.md`](models/README.md) to get Real-ESRGAN-class quality.
+The 2× and 4× Real-ESRGAN exports are bundled under `app/src/main/assets/models/`.
+Other model families still use the classical fallback until their verified
+assets are added. `OnnxInferenceEngine` falls back to bicubic upscaling when an
+asset is missing, corrupt, or fails checksum validation (PRD §5.5 graceful
+degradation). See [`models/README.md`](models/README.md) for checksums and
+conversion provenance.
 
 ## Architecture
 

@@ -70,7 +70,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                 ?: return@runGuarded failure("Invalid enhancement request")
             val baseName = inputData.getString(KEY_OUTPUT_NAME) ?: defaultBaseName()
             val tier = DeviceTiers.classify(applicationContext)
-            val registry = ModelRegistry(applicationContext, ModelManifest.PLACEHOLDER)
+            val registry = ModelRegistry(applicationContext, ModelManifest.BUNDLED)
             val created = OnnxInferenceEngine(registry)
             engine = created
             val configured = created

@@ -606,7 +606,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
 
         private fun probeAvailableAccelerators(app: Application): Set<Accelerator> =
             probeAvailableAccelerators(
-                createEngine = { OnnxInferenceEngine(ModelRegistry(app, ModelManifest.PLACEHOLDER)) },
+                createEngine = { OnnxInferenceEngine(ModelRegistry(app, ModelManifest.BUNDLED)) },
                 probe = { engine, accelerator -> engine.isAvailable(accelerator) },
             )
 
