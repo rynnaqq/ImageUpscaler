@@ -60,6 +60,12 @@ class OnnxInferenceEngine(
     }
 
     companion object {
+        /**
+         * The tile window is `availableProcessors() - 1` wide, so three cores is the
+         * point at which more than one tile can actually be in flight.
+         */
+        internal const val MIN_CORES_FOR_TILE_PARALLELISM = 3
+
         private val sharedLock = Any()
 
         /**
@@ -199,15 +205,18 @@ class OnnxInferenceEngine(
         var session: OrtSession? = null
         return try {
             options.apply {
-                // EnhanceImage runs several tiles at once, and the cores are already
-                // spoken for. Leaving ORT at its default (one intra-op thread per core
-                // per session.run) would give N tiles x N threads and oversubscribe the
-                // CPU, which is slower than either setting alone. One thread per run,
-                // parallelism at the tile level instead.
-                setIntraOpNumThreads(1)
-                setInterOpNumThreads(1)
-                setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
                 setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                // Hand the cores to the tile window, but only where there are enough of
+                // them to form one. The window is cores-1 wide, so a 1-2 core device
+                // always ends up at 1 tile in flight; pinning ORT to a single thread
+                // there would leave it worse off than the default pool for no gain.
+                if (Runtime.getRuntime().availableProcessors() >= MIN_CORES_FOR_TILE_PARALLELISM) {
+                    // Without this, N tiles each fan out across every core, and
+                    // N x cores threads on N cores is slower than either setting alone.
+                    setIntraOpNumThreads(1)
+                    setInterOpNumThreads(1)
+                    setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
+                }
             }
             env.createSession(path, options).also { session = it }
         } catch (e: CancellationException) {

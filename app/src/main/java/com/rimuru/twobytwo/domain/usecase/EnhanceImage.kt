@@ -38,12 +38,12 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * The core pipeline: decode → tiled upscale with seam blending → optional
- * sharpen → encode. Batch-capable: processes each input sequentially, isolating
+ * The core pipeline: decode â†’ tiled upscale with seam blending â†’ optional
+ * sharpen â†’ encode. Batch-capable: processes each input sequentially, isolating
  * failures per image so one bad photo never kills the batch (stability rule).
  *
- * Decode/encode behind [ImageIo]; the engine behind [InferenceEngine] — both
- * swappable, keeping this pure Kotlin (PRD §5.3).
+ * Decode/encode behind [ImageIo]; the engine behind [InferenceEngine] â€” both
+ * swappable, keeping this pure Kotlin (PRD Â§5.3).
  */
 class EnhanceImage(
     private val engine: InferenceEngine,
@@ -54,7 +54,7 @@ class EnhanceImage(
     private val faceRestorer: FaceRestorer? = null,
     private val streamingImageIo: StreamingImageIo? = imageIo as? StreamingImageIo,
     private val streamingScratchDirectory: File = File(System.getProperty("java.io.tmpdir") ?: "."),
-    private val tileWindowFor: (TilingManager, Long) -> Int = Companion::defaultTileWindow,
+    private val tileWindowFor: (TilingManager, Long, Long) -> Int = Companion::defaultTileWindow,
 ) {
     interface ImageIo {
         fun measure(uri: String, maxMegapixels: Int): Dimensions
@@ -64,7 +64,7 @@ class EnhanceImage(
 
         /**
          * Decode using dimensions the caller already measured. Measuring is not free
-         * — on a content:// uri it opens the stream twice and parses Exif — so the
+         * â€” on a content:// uri it opens the stream twice and parses Exif â€” so the
          * pipeline hands back what it got from [measure] instead of paying for it
          * twice. Implementations that cannot use the hint fall back to measuring.
          */
@@ -106,9 +106,6 @@ class EnhanceImage(
         /** Tiles in flight is capped so a big job cannot turn a slow run into an OOM. */
         internal const val MAX_TILE_WINDOW = 4
 
-        /** Share of the heap the in-flight tiles may claim between them. */
-        internal const val TILE_WINDOW_HEAP_FRACTION = 0.25
-
         private const val CHANNELS = 3
         private const val BYTES_PER_FLOAT = 4
         private const val RGBA_BYTES_PER_PIXEL = 4
@@ -122,7 +119,7 @@ class EnhanceImage(
 
         /**
          * How many tiles to keep in flight. Bounded by the heap as well as the core
-         * count, because a 512 px tile at x4 is ~64 MB while it is being inferred —
+         * count, because a 512 px tile at x4 is ~64 MB while it is being inferred â€”
          * four of those on a small device is the difference between faster and an
          * OutOfMemoryError. Always at least 1, which is the old sequential behaviour.
          *
@@ -142,11 +139,25 @@ class EnhanceImage(
          * The window for one image, from the heap this process actually has. Injectable
          * via the constructor so tests can force 1 (the old sequential path) or a wide
          * window and compare the two byte for byte.
+         *
+         * The budget subtracts what the pipeline is already holding â€” the output buffer
+         * and the restored input are both 4 bytes per pixel and dwarf everything else â€”
+         * and reserves an eighth of the heap. A window computed from a fixed fraction
+         * of the heap ignored those buffers entirely, which is how a "parallel" job
+         * turns into an OutOfMemoryError on a device that reported plenty free.
          */
-        internal fun defaultTileWindow(tiling: TilingManager, outputPixels: Long): Int {
+        internal fun defaultTileWindow(
+            tiling: TilingManager,
+            inputPixels: Long,
+            outputPixels: Long,
+        ): Int {
             val heap = Runtime.getRuntime().maxMemory()
-            val budget = (heap.toDouble() * TILE_WINDOW_HEAP_FRACTION).toLong()
-            val perTile = tileInferenceBytes(outputPixels / tiling.tiles().size.coerceAtLeast(1))
+            val resident = outputPixels * RGBA_BYTES_PER_PIXEL + inputPixels * RGBA_BYTES_PER_PIXEL
+            val budget = (heap - resident - heap / 8).coerceAtLeast(0L)
+            // The largest tile, not the average: the biggest tile is what has to fit.
+            val biggestTile = tiling.tiles().maxOfOrNull { it.inW.toLong() * it.inH } ?: 1L
+            val scale = tiling.scale.toLong()
+            val perTile = tileInferenceBytes(biggestTile * scale * scale)
             return tileWindow(budget, perTile, Runtime.getRuntime().availableProcessors())
         }
 
@@ -261,7 +272,7 @@ class EnhanceImage(
     /**
      * @param maxMegapixels input safety valve (FR-1.6, default 48 MP).
      * @param sharpenOutput applies unsharp post-pass to images under [sharpenMaxMegapixels]
-     *   output size — unsharp needs the full buffer twice; above the ceiling memory
+     *   output size â€” unsharp needs the full buffer twice; above the ceiling memory
      *   risk outweighs the punch (stability over sharpness on huge images).
      */
     fun run(
@@ -528,7 +539,7 @@ class EnhanceImage(
             var rowsDone = 0
             val rowSize = Math.toIntExact(Math.multiplyExact(outputWidth, 4L))
             val writer = StreamingTileWriter(tiles, tiling, streamingScratchDirectory)
-            val window = tileWindowFor(tiling, outputWidth * outputHeight)
+            val window = tileWindowFor(tiling, working.width.toLong() * working.height, outputWidth * outputHeight)
             val pendingTiles = ArrayDeque<Pair<TilingManager.Tile, Deferred<Result<InferredTile>>>>()
             val tileScope = CoroutineScope(currentCoroutineContext())
             val tileDispatcher = tileDispatcher(window)
@@ -539,7 +550,6 @@ class EnhanceImage(
                     },
                 )
             }
-            launchTile(tiles[nextTileIndex++])
             var processingFailure: Throwable? = null
             val encodedUri = try {
                 val encoded = streamingIo.encodeStreaming(
@@ -556,7 +566,12 @@ class EnhanceImage(
                         check(nextTileIndex < tiles.size || pendingTiles.isNotEmpty()) {
                             "streaming row is not ready before all tiles were accepted"
                         }
-                        if (pendingTiles.isEmpty()) launchTile(tiles[nextTileIndex++])
+                        // Top the window up to its full width before taking one. Refilling
+                        // after the take (and only one tile at a time) left the deque at
+                        // size 1 forever, which quietly made this path sequential.
+                        while (nextTileIndex < tiles.size && pendingTiles.size < window) {
+                            launchTile(tiles[nextTileIndex++])
+                        }
                         val (currentTile, deferred) = pendingTiles.removeFirst()
                         val inferred = deferred.await().getOrElse { throw it }
                         tilesDone++
@@ -605,9 +620,6 @@ class EnhanceImage(
                                 batchTotal = batchTotal,
                             ),
                         )
-                        if (nextTileIndex < tiles.size && pendingTiles.size < window) {
-                            launchTile(tiles[nextTileIndex++])
-                        }
                     }
                     writer.writeRow(rowBuffer, rowsDone)
                     rowsDone++
@@ -665,7 +677,7 @@ class EnhanceImage(
 
         var out = ByteArray(outputBytes)
         val tiles = tiling.tiles()
-        val window = tileWindowFor(tiling, outputWidth * outputHeight)
+        val window = tileWindowFor(tiling, working.width.toLong() * working.height, outputWidth * outputHeight)
         var tilesDone = 0
         forEachOrderedWindowed(
             items = tiles,
@@ -767,7 +779,7 @@ class EnhanceImage(
 
     /**
      * The expensive half of a tile: cut it out, run the neural passes, convert back.
-     * Deliberately free of ordering so it can run on any thread — everything that
+     * Deliberately free of ordering so it can run on any thread â€” everything that
      * depends on tile order happens in the consumer.
      */
     private fun inferTile(
@@ -808,12 +820,13 @@ class EnhanceImage(
      *
      * Order is the whole point. TileBlender blends each tile's feathered ramp against
      * what neighbouring tiles already wrote, and StreamingTileWriter rejects a tile
-     * that is not the one it expects next — so consuming out of order would corrupt
+     * that is not the one it expects next â€” so consuming out of order would corrupt
      * every seam. Inferring in parallel is safe; blending stays exactly as it was.
      *
-     * Failures are captured rather than thrown on the worker so that one bad tile
-     * cannot cancel its siblings, then rethrown on the consumer — which keeps the
-     * existing per-image error handling and the OOM/cancellation contract intact.
+     * A failing tile is captured rather than thrown on the worker, then rethrown by the
+     * consumer, so one bad tile cannot cancel its siblings and the error still reaches
+     * the caller on the original coroutine with its original type. Cancellation is
+     * rethrown immediately: it is never a tile failure.
      */
     private suspend fun <I, O> forEachOrderedWindowed(
         items: List<I>,
@@ -823,6 +836,7 @@ class EnhanceImage(
         consume: suspend (I, O) -> Unit,
     ) {
         if (items.isEmpty()) return
+        val width = window.coerceAtLeast(1)
         val scope = CoroutineScope(currentCoroutineContext())
         val pending = ArrayDeque<Deferred<Result<O>>>()
         var launched = 0
@@ -831,7 +845,7 @@ class EnhanceImage(
             pending.addLast(scope.async(dispatcher) { guard { produce(item) } })
         }
 
-        repeat(minOf(window, items.size)) {
+        repeat(minOf(width, items.size)) {
             launch(items[launched])
             launched++
         }
@@ -845,6 +859,17 @@ class EnhanceImage(
         }
     }
 
+    /**
+     * Runs one tile's inference, turning any failure into a value the consumer rethrows.
+     *
+     * OutOfMemoryError is deliberately captured rather than rethrown here, the one place
+     * this differs from the rest of the codebase. Rethrown on a worker coroutine it would
+     * cancel the parent scope, and the pipeline would meet a CancellationException and
+     * report an out-of-memory job as a user cancellation. Carried as a value it is
+     * rethrown on the consumer instead, where it stays an OutOfMemoryError all the way
+     * out. Sibling tiles still in flight are abandoned as the parent unwinds, which
+     * costs nothing: the heap is already gone.
+     */
     private inline fun <T> guard(block: () -> T): Result<T> = try {
         Result.success(block())
     } catch (e: CancellationException) {

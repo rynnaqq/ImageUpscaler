@@ -10,6 +10,8 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.rimuru.twobytwo.data.device.DeviceTiers
+import com.rimuru.twobytwo.data.engine.ModelManifest
+import com.rimuru.twobytwo.data.engine.ModelRegistry
 import com.rimuru.twobytwo.data.engine.OnnxInferenceEngine
 import com.rimuru.twobytwo.data.history.FileHistoryStore
 import com.rimuru.twobytwo.data.history.HistoryRecord
@@ -604,7 +606,14 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
 
         private fun probeAvailableAccelerators(app: Application): Set<Accelerator> =
             probeAvailableAccelerators(
-                createEngine = { OnnxInferenceEngine.shared(app, ModelProfile.ULTRA) },
+                // Deliberately NOT the shared engine: probeAvailableAccelerators closes
+                // whatever it is given, and closing the process-wide engine would drop
+                // the session a running job is using out from under its tile threads.
+                createEngine = {
+                    OnnxInferenceEngine(
+                        ModelRegistry(app, ModelManifest.BUNDLED),
+                    )
+                },
                 probe = { engine, accelerator -> engine.isAvailable(accelerator) },
             )
 

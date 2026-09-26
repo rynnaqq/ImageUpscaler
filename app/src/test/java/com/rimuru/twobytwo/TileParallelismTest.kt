@@ -9,6 +9,7 @@ import com.rimuru.twobytwo.domain.model.ExportPolicy
 import com.rimuru.twobytwo.domain.model.OutputFormat
 import com.rimuru.twobytwo.domain.model.ScaleFactor
 import com.rimuru.twobytwo.domain.usecase.EnhanceImage
+import com.rimuru.twobytwo.domain.usecase.StreamingImageIo
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
@@ -69,12 +70,87 @@ class TileParallelismTest {
         override fun close() = Unit
     }
 
+    /**
+     * The streaming path pulls tiles on demand from inside the encoder's row callback.
+     * It had its own window bookkeeping, and a bug there left it at one tile in flight,
+     * which no buffered-path test can see because it never takes that branch.
+     */
+    private class StreamingCapturingIo(scratch: java.io.File) : CapturingIo(), StreamingImageIo {
+        var scratchDir = scratch
+
+        override fun checkScratchCapacity(requiredBytes: Long) = Unit
+
+        override suspend fun encodeStreaming(
+            width: Int,
+            height: Int,
+            destinationUri: String,
+            policy: ExportPolicy,
+            exifSourceUri: String?,
+            produceRows: suspend (ByteArray) -> Unit,
+        ): String {
+            val row = ByteArray(width * 4)
+            for (y in 0 until height) {
+                java.util.Arrays.fill(row, 0)
+                produceRows(row)
+            }
+            return destinationUri
+        }
+    }
+
+    private fun runStreamingWith(window: Int, engine: InferenceEngine, scratch: java.io.File): ByteArray =
+        runBlocking {
+            val io = StreamingCapturingIo(scratch)
+            val useCase = EnhanceImage(
+                engine = engine,
+                imageIo = io,
+                tileConfig = EnhanceImage.TileConfig(tileSize = 64),
+                streamingImageIo = io,
+                streamingScratchDirectory = scratch,
+                tileWindowFor = { _, _, _ -> window },
+            )
+            useCase.run(
+                request = request(),
+                outputNameFor = { _, _ -> "out" },
+                sharpenMaxMegapixels = 0.0,
+            ).toList()
+            io.encoded ?: error("stream encode never ran")
+        }
+
+    @Test
+    fun `the streaming path also overlaps tile inference`() {
+        val engine = FakeEngine()
+        val scratch = java.nio.file.Files.createTempDirectory("rimuru2x-stream").toFile()
+        try {
+            runStreamingWith(window = 4, engine = engine, scratch = scratch)
+        } finally {
+            scratch.deleteRecursively()
+        }
+
+        assertTrue(
+            "the streaming window never exceeded one tile in flight (peak ${engine.concurrentPeak.get()})",
+            engine.concurrentPeak.get() > 1,
+        )
+    }
+
+    @Test
+    fun `a window of one stays sequential on the streaming path too`() {
+        val engine = FakeEngine()
+        val scratch = java.nio.file.Files.createTempDirectory("rimuru2x-stream").toFile()
+        try {
+            runStreamingWith(window = 1, engine = engine, scratch = scratch)
+        } finally {
+            scratch.deleteRecursively()
+        }
+
+        assertEquals(1, engine.concurrentPeak.get())
+    }
+
     companion object {
         /** 128 px at tileSize 64 / overlap 24 gives a 3x3 = 9 tile plan. */
         const val SOURCE_SIDE = 128
     }
 
-    private class CapturingIo : EnhanceImage.ImageIo {
+    private open class CapturingIo : EnhanceImage.ImageIo {
         var encoded: ByteArray? = null
         var encodeCount = 0
 
@@ -115,7 +191,7 @@ class TileParallelismTest {
             engine = engine,
             imageIo = io,
             tileConfig = EnhanceImage.TileConfig(tileSize = 64),
-            tileWindowFor = { _, _ -> window },
+            tileWindowFor = { _, _, _ -> window },
         )
         val progress = useCase.run(
             request = request(),

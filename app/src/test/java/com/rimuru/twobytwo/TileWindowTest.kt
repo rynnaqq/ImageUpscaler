@@ -66,7 +66,20 @@ class TileWindowTest {
     }
 
     @Test
-    fun `the heap fraction leaves most of the heap alone`() {
-        assertTrue(EnhanceImage.TILE_WINDOW_HEAP_FRACTION in 0.1..0.4)
+    fun `the window is one when the big buffers leave no room for tiles`() {
+        // 24 MP output and a 24 MP restored input are 96 MB each, so on a 256 MB heap
+        // there is nothing meaningful left, and a 512 px x4 tile alone wants ~64 MB.
+        val pixels = 24_000_000L
+        val resident = pixels * 4 * 2
+        val heap = 256L * megabyte
+        val budget = (heap - resident - heap / 8).coerceAtLeast(0L)
+        val perTile = EnhanceImage.tileInferenceBytes(2048L * 2048)
+        assertTrue("expected ~64 MB per tile, got $perTile", perTile in 60 * megabyte..70 * megabyte)
+
+        assertEquals(
+            "a 256 MB heap must not claim it can run 512 px x4 tiles in parallel",
+            1,
+            EnhanceImage.tileWindow(budget, perTile, cores = 16),
+        )
     }
 }
