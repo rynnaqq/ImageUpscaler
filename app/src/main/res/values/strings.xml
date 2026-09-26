@@ -4,7 +4,7 @@
     <!-- S1 Home -->
     <string name="home_title">Rimuru 2x</string>
     <string name="home_pick_photo">Pick photos</string>
-    <string name="home_batch_hint">Select up to 20 photos — they\'ll be enhanced one by one with the same settings</string>
+    <string name="home_batch_hint">Select up to 50 photos — they\'ll be enhanced one by one with the same settings</string>
     <string name="home_drop_hint">Pick or share a photo to enhance — everything stays on your device</string>
     <string name="home_recent_jobs">Recent jobs</string>
     <string name="home_privacy_note">All processing happens on your device. Always.</string>
@@ -12,6 +12,11 @@
     <!-- Batch -->
     <string name="config_batch_title">Enhancing %1$d photos</string>
     <string name="proc_batch_counter">Photo %1$d of %2$d</string>
+    <string name="batch_status_queued">Queued</string>
+    <string name="batch_status_processing">Processing</string>
+    <string name="batch_status_succeeded">Succeeded</string>
+    <string name="batch_status_failed">Failed</string>
+    <string name="batch_status_cancelled">Cancelled</string>
 
     <!-- S2 Config -->
     <string name="config_scale">Scale</string>
@@ -30,13 +35,48 @@
     <string name="config_face_restore">Face restore</string>
     <string name="config_face_desc">Rebuilds blurry faces naturally — drag toward fidelity to keep the same person</string>
     <string name="config_face_strength">Fidelity ↔ Enhancement</string>
+    <string name="config_crop_preset">Crop preset</string>
+    <string name="config_crop_preset_desc">Crop the photo before restoration and upscaling.</string>
+    <string name="config_crop_none">Original</string>
+    <string name="config_crop_square">1:1 square</string>
+    <string name="config_crop_portrait_9_16">9:16 portrait</string>
+    <string name="config_crop_portrait_4_5">4:5 portrait</string>
+    <string name="config_crop_print_4_6">4:6 print</string>
+    <string name="config_crop_print_8_10">8:10 print</string>
+    <string name="config_sharpen">Sharpen</string>
+    <string name="config_sharpen_desc">Add fine edge definition after upscaling.</string>
+    <string name="config_deblur">Deblur</string>
+    <string name="config_deblur_desc">Reduce motion blur before upscaling.</string>
+    <string name="config_deblur_strength">Deblur strength</string>
+    <string name="config_scratch_repair">Scratch repair</string>
+    <string name="config_scratch_repair_desc">Repair visible scratches and damaged lines.</string>
+    <string name="config_scratch_repair_strength">Scratch repair strength</string>
+    <string name="config_colorize">Colorize</string>
+    <string name="config_colorize_desc">Add color to monochrome photos.</string>
+    <string name="config_colorize_strength">Colorization strength</string>
+    <string name="config_model_profile">Model profile</string>
+    <string name="config_model_profile_desc">Choose how much processing detail to use for each photo.</string>
+    <string name="config_model_fast">Fast</string>
+    <string name="config_model_fast_desc">Classical, lightweight processing for faster results.</string>
+    <string name="config_model_ultra">Ultra</string>
+    <string name="config_model_ultra_desc">Uses a local neural model when available, with a safe local fallback.</string>
     <string name="config_accelerator">Hardware accelerator</string>
-    <string name="config_accel_desc">Auto picks the fastest chip available — force CPU if results look odd</string>
+    <string name="config_accel_desc">Choose an available on-device backend.</string>
     <string name="config_accel_auto">Auto</string>
     <string name="config_accel_gpu">Vulkan GPU</string>
     <string name="config_accel_npu">NPU</string>
     <string name="config_accel_cpu">CPU</string>
+    <string name="config_accel_auto_status">Auto uses an available backend and falls back to CPU.</string>
+    <string name="config_accel_unavailable">Unavailable on this device</string>
+    <string name="config_option_selected">Selected</string>
+    <string name="config_option_available">Available</string>
+    <string name="config_control_on">On</string>
+    <string name="config_control_off">Off</string>
     <string name="config_output_size">Output: %1$dx%2$d</string>
+    <string name="config_cache_limit">Render cache limit</string>
+    <string name="config_cache_limit_desc">Intermediate renders are removed automatically when this limit is exceeded.</string>
+    <string name="config_cache_mb">%1$d MB</string>
+    <string name="config_cache_gb">%1$s GB</string>
     <string name="config_title">Enhancement settings</string>
     <string name="config_enhance">Enhance</string>
     <string name="navigate_back">Back</string>
@@ -56,6 +96,13 @@
     <string name="proc_cancel_confirm_title">Cancel job?</string>
     <string name="proc_cancel_confirm_text">The job is more than half done. Cancel anyway?</string>
     <string name="proc_backend_used">Accelerator: %1$s</string>
+    <string name="proc_pass_denoise">Denoise</string>
+    <string name="proc_pass_deblur">Deblur</string>
+    <string name="proc_pass_scratch_repair">Scratch repair</string>
+    <string name="proc_pass_colorize">Colorization</string>
+    <string name="proc_pass_face_restore">Face restoration</string>
+    <string name="proc_pass_fallback">Fallback</string>
+    <string name="proc_pass_fallback_desc">A local method is used when the model is unavailable.</string>
 
     <!-- S4 Comparison -->
     <string name="compare_title">Compare</string>
@@ -71,14 +118,36 @@
     <!-- S5 Export -->
     <string name="export_title">Export</string>
     <string name="export_format">Format</string>
+    <string name="export_format_desc">Choose PNG, JPEG, or WebP for the saved image.</string>
     <string name="export_png">PNG (lossless)</string>
     <string name="export_jpeg">JPEG (high quality)</string>
-    <string name="export_keep_exif">Keep photo metadata (Exif)</string>
+    <string name="export_webp">WebP (lossless)</string>
+    <string name="export_quality">JPEG quality</string>
+    <string name="export_quality_desc">Higher quality uses more storage; PNG and WebP remain lossless.</string>
+    <string name="export_quality_value">%1$d%%</string>
+    <string name="export_keep_exif">Keep capture metadata (EXIF)</string>
+    <string name="export_keep_exif_desc">Keep capture date, camera make, and camera model.</string>
+    <string name="export_keep_gps">Keep location metadata (GPS)</string>
+    <string name="export_keep_gps_desc">GPS is copied only when this is enabled.</string>
     <string name="export_save">Save to gallery</string>
     <string name="export_saved">Saved to gallery</string>
     <string name="export_preview_notice">Preview only — the enhanced file is not available yet.</string>
     <string name="export_share">Share</string>
     <string name="export_save_copy">Save a copy</string>
+
+    <string name="history_title">History</string>
+    <string name="history_empty">No completed jobs yet</string>
+    <string name="history_restore">Restore settings</string>
+    <string name="history_duplicate">Duplicate settings</string>
+    <string name="history_export">Export output</string>
+    <string name="history_original">Original version</string>
+    <string name="history_child">Derived version</string>
+    <string name="history_parent">Parent version</string>
+    <string name="history_view_parent">View parent</string>
+    <string name="history_parent_unavailable">Parent version unavailable</string>
+    <string name="history_output_unavailable">Output not available yet</string>
+    <string name="history_created">Created %1$s</string>
+    <string name="history_dimensions">%1$d × %2$d</string>
 
     <!-- Errors -->
     <string name="error_model_missing">Neural model unavailable — fast mode used instead</string>

@@ -31,6 +31,11 @@ jobs:
       - name: Assemble debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
+      - name: Assemble Android tests
+        run: ./gradlew :app:assembleDebugAndroidTest --stacktrace
+      - name: Assemble release APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+
       - uses: actions/upload-artifact@v5
         with:
           name: debug-apk

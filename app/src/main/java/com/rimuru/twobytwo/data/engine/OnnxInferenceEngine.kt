@@ -4,10 +4,12 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
 import com.rimuru.twobytwo.domain.engine.InferenceEngine
+import com.rimuru.twobytwo.domain.engine.ModelProvider
+import com.rimuru.twobytwo.domain.engine.TensorCodec
 import com.rimuru.twobytwo.domain.model.Accelerator
-import java.io.File
+import com.rimuru.twobytwo.domain.model.ModelProfile
+import kotlinx.coroutines.CancellationException
 import java.nio.FloatBuffer
-import java.security.MessageDigest
 
 /**
  * ONNX Runtime Mobile engine (PRD TC-2). Models load from assets → filesDir cache
@@ -18,22 +20,74 @@ import java.security.MessageDigest
  * (present in newer ORT builds) is the upgrade path when we benchmark it.
  */
 class OnnxInferenceEngine(
-    private val context: Context,
-    private val manifest: ModelManifest,
+    private val modelProvider: ModelProvider,
+    private val environmentFactory: () -> OrtEnvironment = { OrtEnvironment.getEnvironment() },
 ) : InferenceEngine {
 
-    private val env: OrtEnvironment by lazy { OrtEnvironment.getEnvironment() }
-    private val sessions = mutableMapOf<InferenceEngine.ModelKey, OrtSession>()
+    constructor(context: Context, manifest: ModelManifest) : this(ModelRegistry(context, manifest))
+
+    private val env: OrtEnvironment by lazy(environmentFactory)
+
+    // Tiles are inferred concurrently, so every map the engine touches during a run
+    // must tolerate parallel writes. A plain HashMap can corrupt itself here, which
+    // would surface as a phantom "model unavailable" rather than a crash.
+    private val sessions = java.util.concurrent.ConcurrentHashMap<InferenceEngine.ModelKey, OrtSession>()
+    private val sessionBackends = java.util.concurrent.ConcurrentHashMap<InferenceEngine.ModelKey, String>()
+    private val backendStatus = java.util.concurrent.ConcurrentHashMap<InferenceEngine.ModelKey, String>()
+
+    @Volatile
+    private var activeModelKey: InferenceEngine.ModelKey? = null
+    private val sessionLock = Any()
+    private var closed = false
 
     override val backendName: String
-        get() = _backendName
-    private var _backendName: String = "ORT CPU"
+        get() = activeModelKey?.let { backendStatus[it] } ?: "Model not loaded"
 
     private var lastRequestedAccelerator = Accelerator.AUTO
+    private var profile = ModelProfile.ULTRA
+
+    /** The registry backing this engine, so callers can share one materialisation. */
+    internal val provider: ModelProvider get() = modelProvider
+
+    fun withProfile(profile: ModelProfile): OnnxInferenceEngine {
+        this.profile = profile
+        return this
+    }
 
     fun withAccelerator(accelerator: Accelerator): OnnxInferenceEngine {
         lastRequestedAccelerator = accelerator
         return this
+    }
+
+    companion object {
+        /**
+         * The tile window is `availableProcessors() - 1` wide, so three cores is the
+         * point at which more than one tile can actually be in flight.
+         */
+        internal const val MIN_CORES_FOR_TILE_PARALLELISM = 3
+
+        private val sharedLock = Any()
+
+        /**
+         * Engines are expensive to build and were being thrown away after every job:
+         * a fresh registry meant re-hashing the 64 MB asset, and a fresh engine meant
+         * re-parsing the graph, so the second photo in a session paid for both again.
+         * One engine per profile is kept for the life of the process instead.
+         *
+         * Keyed by profile rather than reconfigured per job: [withProfile] mutates in
+         * place, so a shared instance would let a newly enqueued job change the profile
+         * under a still-unwinding previous one.
+         */
+        private val shared = mutableMapOf<ModelProfile, OnnxInferenceEngine>()
+
+        fun shared(context: Context, profile: ModelProfile): OnnxInferenceEngine =
+            synchronized(sharedLock) {
+                shared.getOrPut(profile) {
+                    OnnxInferenceEngine(
+                        ModelRegistry(context.applicationContext, ModelManifest.BUNDLED),
+                    ).withProfile(profile)
+                }
+            }
     }
 
     override fun isAvailable(accelerator: Accelerator): Boolean = when (accelerator) {
@@ -49,70 +103,184 @@ class OnnxInferenceEngine(
         tileHeight: Int,
         modelKey: InferenceEngine.ModelKey,
     ): FloatArray {
+        if (profile == ModelProfile.FAST) {
+            activeModelKey = modelKey
+            backendStatus[modelKey] = "Bicubic (FAST; local classical path)"
+            return bicubicFallback(input, tileWidth, tileHeight, modelKey)
+        }
         val session = sessionFor(modelKey)
             ?: return bicubicFallback(input, tileWidth, tileHeight, modelKey)
-        val shape = longArrayOf(1, 3, tileHeight.toLong(), tileWidth.toLong())
-        val tensor = ai.onnxruntime.OnnxTensor.createTensor(env, FloatBuffer.wrap(input), shape)
-        tensor.use {
-            session.run(mapOf(session.inputNames.first() to it)).use { results ->
-                @Suppress("UNCHECKED_CAST")
-                val outTensor = results[0].value as Array<Array<Array<FloatArray>>>
-                val outH = outTensor[0][0].size
-                val outW = outTensor[0][0][0].size
-                val flat = FloatArray(3 * outH * outW)
-                for (c in 0 until 3) {
-                    for (y in 0 until outH) {
-                        System.arraycopy(outTensor[0][c][y], 0, flat, c * outH * outW + y * outW, outW)
-                    }
-                }
-                return flat
+
+        return try {
+            val scale = InferenceEngine.scaleFor(modelKey)
+            val even = evenTileRequired(modelKey)
+            val runWidth = if (even) tileWidth + (tileWidth and 1) else tileWidth
+            val runHeight = if (even) tileHeight + (tileHeight and 1) else tileHeight
+            val source = if (runWidth == tileWidth && runHeight == tileHeight) {
+                input
+            } else {
+                TensorCodec.padChwToEven(input, tileWidth, tileHeight)
             }
+            val shape = longArrayOf(1, 3, runHeight.toLong(), runWidth.toLong())
+            val tensor = ai.onnxruntime.OnnxTensor.createTensor(env, FloatBuffer.wrap(source), shape)
+            tensor.use {
+                session.run(mapOf(session.inputNames.first() to it)).use { results ->
+                    @Suppress("UNCHECKED_CAST")
+                    val outTensor = results[0].value as Array<Array<Array<FloatArray>>>
+                    val outH = outTensor[0][0].size
+                    val outW = outTensor[0][0][0].size
+                    val flat = FloatArray(3 * outH * outW)
+                    for (c in 0 until 3) {
+                        for (y in 0 until outH) {
+                            System.arraycopy(outTensor[0][c][y], 0, flat, c * outH * outW + y * outW, outW)
+                        }
+                    }
+                    // Only a padded (odd) x2 tile grows the output. Callers size their
+                    // read from the requested tile, so drop the padded tail; anything
+                    // else keeps the existing "return what the model produced" path.
+                    cropPaddedTail(flat, outW, outH, tileWidth, tileHeight, scale)
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: OutOfMemoryError) {
+            throw e
+        } catch (t: Throwable) {
+            markFallback(modelKey, "${sessionBackends[modelKey] ?: "model"} runtime unavailable${reasonSuffix(t)}")
+            bicubicFallback(input, tileWidth, tileHeight, modelKey)
         }
     }
 
     private fun sessionFor(modelKey: InferenceEngine.ModelKey): OrtSession? {
-        sessions[modelKey]?.let { return it }
-        val entry = manifest.entries[modelKey] ?: return null // model missing → bilinear fallback
-        val file = materializeModel(entry) ?: return null
-        return try {
-            val session = env.createSession(file.absolutePath, OrtSession.SessionOptions())
-            sessions[modelKey] = session
-            session
-        } catch (t: Throwable) {
-            null // HW-3: never crash on backend failure
+        sessions[modelKey]?.let {
+            activateSession(modelKey)
+            return it
         }
-    }
-
-    /** Assets → filesDir cache with sha256 verify (PRD §5.5). Null if missing/corrupt. */
-    private fun materializeModel(entry: ModelManifest.Entry): File? {
-        val cacheDir = File(context.filesDir, "models").apply { mkdirs() }
-        val f = File(cacheDir, entry.fileName)
-        if (f.exists() && sha256(f) == entry.sha256) return f
-
-        return try {
-            context.assets.open("models/${entry.fileName}").use { input ->
-                f.outputStream().use { input.copyTo(it) }
+        // Concurrent tiles race here: without the lock the first window of tiles would
+        // each miss the cache and each build a session for the same model, leaking all
+        // but one. The lock is only on the cold path, so the hit above stays lock-free.
+        synchronized(sessionLock) {
+            sessions[modelKey]?.let {
+                activateSession(modelKey)
+                return it
             }
-            if (entry.sha256.isEmpty() || sha256(f) == entry.sha256) f else {
-                f.delete()
+            val handle = try {
+                modelProvider.load(modelKey)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: OutOfMemoryError) {
+                throw e
+            } catch (t: Throwable) {
+                markFallback(modelKey, "model load failed${reasonSuffix(t)}")
+                null
+            } ?: run {
+                markFallback(modelKey, "model unavailable (${modelKey.assetName})")
+                return null
+            }
+
+            return try {
+                val path = handle.modelPath
+                if (path.isNullOrBlank()) {
+                    markFallback(modelKey, "invalid model handle (${modelKey.assetName})")
+                    null
+                } else {
+                    val session = createSession(path)
+                    sessions[modelKey] = session
+                    markSession(modelKey, handle.backendName)
+                    session
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: OutOfMemoryError) {
+                throw e
+            } catch (t: Throwable) {
+                markFallback(modelKey, "${handle.backendName} session unavailable${reasonSuffix(t)}")
                 null
             }
-        } catch (t: Throwable) {
-            null
         }
     }
 
-    private fun sha256(f: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        f.inputStream().use { stream ->
-            val buf = ByteArray(8192)
-            while (true) {
-                val n = stream.read(buf)
-                if (n <= 0) break
-                digest.update(buf, 0, n)
+    private fun createSession(path: String): OrtSession {
+        val options = OrtSession.SessionOptions()
+        var session: OrtSession? = null
+        return try {
+            options.apply {
+                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                // Hand the cores to the tile window, but only where there are enough of
+                // them to form one. The window is cores-1 wide, so a 1-2 core device
+                // always ends up at 1 tile in flight; pinning ORT to a single thread
+                // there would leave it worse off than the default pool for no gain.
+                if (Runtime.getRuntime().availableProcessors() >= MIN_CORES_FOR_TILE_PARALLELISM) {
+                    // Without this, N tiles each fan out across every core, and
+                    // N x cores threads on N cores is slower than either setting alone.
+                    setIntraOpNumThreads(1)
+                    setInterOpNumThreads(1)
+                    setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
+                }
+            }
+            env.createSession(path, options).also { session = it }
+        } catch (e: CancellationException) {
+            closeSession(session)
+            throw e
+        } catch (e: OutOfMemoryError) {
+            closeSession(session)
+            throw e
+        } catch (t: Throwable) {
+            closeSession(session)
+            throw t
+        } finally {
+            try {
+                options.close()
+            } catch (e: CancellationException) {
+                closeSession(session)
+                throw e
+            } catch (e: OutOfMemoryError) {
+                closeSession(session)
+                throw e
+            } catch (_: Throwable) {
             }
         }
-        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun closeSession(session: OrtSession?) {
+        if (session == null) return
+        try {
+            session.close()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: OutOfMemoryError) {
+            throw e
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * Names the exception class as well as its message. A per-tile failure degrades
+     * that one tile to bicubic and the job continues, so without the class name a
+     * genuine bug (IndexOutOfBoundsException, ClassCastException) was indistinguishable
+     * from a legitimately unavailable model — the status string is the only place it
+     * surfaces.
+     */
+    private fun reasonSuffix(t: Throwable): String {
+        val type = t::class.java.simpleName.ifBlank { "Throwable" }
+        val detail = t.message?.takeIf { it.isNotBlank() }?.let { ": ${it.take(80)}" }.orEmpty()
+        return " ($type)$detail"
+    }
+
+    private fun markSession(modelKey: InferenceEngine.ModelKey, backend: String) {
+        sessionBackends[modelKey] = backend
+        backendStatus[modelKey] = backend
+        activeModelKey = modelKey
+    }
+
+    private fun activateSession(modelKey: InferenceEngine.ModelKey) {
+        backendStatus[modelKey] = sessionBackends[modelKey] ?: "Model not loaded"
+        activeModelKey = modelKey
+    }
+
+    private fun markFallback(modelKey: InferenceEngine.ModelKey, reason: String) {
+        backendStatus[modelKey] = "Bicubic fallback (${reason.take(240)})"
+        activeModelKey = modelKey
     }
 
     /** Catmull-Rom bicubic upscale so a missing model degrades gracefully (FR-1.3/§5.5). */
@@ -129,7 +297,56 @@ class OnnxInferenceEngine(
     )
 
     override fun close() {
-        sessions.values.forEach { runCatching { it.close() } }
-        sessions.clear()
+        if (closed) return
+        closed = true
+        try {
+            sessions.values.forEach(::closeSession)
+        } finally {
+            sessions.clear()
+            try {
+                modelProvider.close()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: OutOfMemoryError) {
+                throw e
+            } catch (_: Throwable) {
+            }
+        }
+    }
+}
+
+/**
+ * True when the bundled graph for [modelKey] cannot run odd tile dimensions and
+ * needs [TensorCodec.padChwToEven] first.
+ *
+ * `realesrgan_compact_x2.onnx` ends in a reshape-based pixel shuffle
+ * (3x Reshape + 3x Unsqueeze + 1x Transpose) that requires even H/W;
+ * `realesrgan_compact_x4.onnx` has no Reshape/Unsqueeze/Transpose at all and
+ * upsamples with 2x Resize, so it handles odd tiles unchanged.
+ */
+internal fun evenTileRequired(modelKey: InferenceEngine.ModelKey): Boolean =
+    modelKey == InferenceEngine.ModelKey.CREATIVE_X2
+
+/**
+ * Drop the padded tail from a model output so the engine always hands back
+ * exactly `3 * tileHeight * scale * tileWidth * scale`, which is what
+ * `TensorCodec.chwToRgba` and the seam blender read. Returns [output] untouched
+ * when the model produced no more than the requested tile, so an even tile and
+ * an unexpected small output keep their previous behaviour.
+ */
+internal fun cropPaddedTail(
+    output: FloatArray,
+    outWidth: Int,
+    outHeight: Int,
+    tileWidth: Int,
+    tileHeight: Int,
+    scale: Int,
+): FloatArray {
+    val wantWidth = tileWidth * scale
+    val wantHeight = tileHeight * scale
+    return if (outWidth <= wantWidth && outHeight <= wantHeight) {
+        output
+    } else {
+        TensorCodec.cropChw(output, outWidth, outHeight, wantWidth, wantHeight)
     }
 }

@@ -35,6 +35,8 @@ interface InferenceEngine : AutoCloseable {
         PRECISION_X4("swin2sr_light_x4.onnx"),
         FACE_RESTORE("gfpgan_mobile.onnx"),
         FACE_DETECT("blazeface_short_range.onnx"),
+        SCRATCH_REPAIR("scratch_repair.onnx"),
+        COLORIZE("colorize.onnx"),
     }
 
     companion object {
@@ -42,7 +44,10 @@ interface InferenceEngine : AutoCloseable {
         fun scaleFor(modelKey: ModelKey): Int = when (modelKey) {
             ModelKey.CREATIVE_X2, ModelKey.PRECISION_X2 -> 2
             ModelKey.CREATIVE_X4, ModelKey.PRECISION_X4 -> 4
-            ModelKey.FACE_RESTORE, ModelKey.FACE_DETECT -> 1
+            ModelKey.FACE_RESTORE,
+            ModelKey.FACE_DETECT,
+            ModelKey.SCRATCH_REPAIR,
+            ModelKey.COLORIZE -> 1
         }
     }
 }

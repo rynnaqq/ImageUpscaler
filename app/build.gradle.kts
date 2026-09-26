@@ -14,6 +14,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             // TC-1: zero-network app; arm64 primary per PRD §6.2
             abiFilters += listOf("arm64-v8a", "x86_64") // x86_64 for emulator dev only
@@ -58,5 +59,11 @@ dependencies {
     implementation(libs.androidx.exifinterface)
     implementation(libs.coil.compose)
     implementation(libs.onnx.runtime.android)
+    implementation(libs.spectrum.default)
     testImplementation(libs.junit)
+    testImplementation(libs.org.json)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }

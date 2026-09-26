@@ -16,10 +16,27 @@ data class ModelManifest(
     )
 
     companion object {
+        val BUNDLED = ModelManifest(
+            InferenceEngine.ModelKey.entries.associateWith { key ->
+                when (key) {
+                    InferenceEngine.ModelKey.CREATIVE_X2 -> Entry(
+                        fileName = "realesrgan_compact_x2.onnx",
+                        version = "2plus-fp32-op20",
+                        sha256 = "fb3ce45a465b7b5a30a6c6ae8aa09cd0df192824fefdb07e16bae0af18ef60e9",
+                    )
+                    InferenceEngine.ModelKey.CREATIVE_X4 -> Entry(
+                        fileName = "realesrgan_compact_x4.onnx",
+                        version = "4plus-fp32-op20",
+                        sha256 = "01be1ebcddc7a08663818ac96e7ab95e4f2c812aa4423c9b7e2e59a716a6626c",
+                    )
+                    else -> Entry(fileName = key.assetName, version = "0.0.0-placeholder", sha256 = "")
+                }
+            },
+        )
+
         /**
-         * ponytail: placeholder manifest with empty sha256 = "accept any file".
-         * Replace checksums with real values from models/README.md conversion step;
-         * before Play release, empty sha256 must hard-fail (see ModelsApi TODO in README).
+         * The registry rejects blank checksums, so placeholder entries select the
+         * classical fallback until real SHA-256 values are supplied.
          */
         val PLACEHOLDER = ModelManifest(
             InferenceEngine.ModelKey.entries.associateWith { key ->
