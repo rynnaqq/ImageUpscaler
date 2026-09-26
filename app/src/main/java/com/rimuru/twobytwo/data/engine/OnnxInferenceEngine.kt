@@ -39,6 +39,9 @@ class OnnxInferenceEngine(
     private var lastRequestedAccelerator = Accelerator.AUTO
     private var profile = ModelProfile.ULTRA
 
+    /** The registry backing this engine, so callers can share one materialisation. */
+    internal val provider: ModelProvider get() = modelProvider
+
     fun withProfile(profile: ModelProfile): OnnxInferenceEngine {
         this.profile = profile
         return this
@@ -47,6 +50,31 @@ class OnnxInferenceEngine(
     fun withAccelerator(accelerator: Accelerator): OnnxInferenceEngine {
         lastRequestedAccelerator = accelerator
         return this
+    }
+
+    companion object {
+        private val sharedLock = Any()
+
+        /**
+         * Engines are expensive to build and were being thrown away after every job:
+         * a fresh registry meant re-hashing the 64 MB asset, and a fresh engine meant
+         * re-parsing the graph, so the second photo in a session paid for both again.
+         * One engine per profile is kept for the life of the process instead.
+         *
+         * Keyed by profile rather than reconfigured per job: [withProfile] mutates in
+         * place, so a shared instance would let a newly enqueued job change the profile
+         * under a still-unwinding previous one.
+         */
+        private val shared = mutableMapOf<ModelProfile, OnnxInferenceEngine>()
+
+        fun shared(context: Context, profile: ModelProfile): OnnxInferenceEngine =
+            synchronized(sharedLock) {
+                shared.getOrPut(profile) {
+                    OnnxInferenceEngine(
+                        ModelRegistry(context.applicationContext, ModelManifest.BUNDLED),
+                    ).withProfile(profile)
+                }
+            }
     }
 
     override fun isAvailable(accelerator: Accelerator): Boolean = when (accelerator) {

@@ -10,8 +10,6 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.rimuru.twobytwo.data.device.DeviceTiers
-import com.rimuru.twobytwo.data.engine.ModelManifest
-import com.rimuru.twobytwo.data.engine.ModelRegistry
 import com.rimuru.twobytwo.data.engine.OnnxInferenceEngine
 import com.rimuru.twobytwo.data.history.FileHistoryStore
 import com.rimuru.twobytwo.data.history.HistoryRecord
@@ -606,7 +604,7 @@ class EnhanceViewModel(app: Application) : AndroidViewModel(app) {
 
         private fun probeAvailableAccelerators(app: Application): Set<Accelerator> =
             probeAvailableAccelerators(
-                createEngine = { OnnxInferenceEngine(ModelRegistry(app, ModelManifest.BUNDLED)) },
+                createEngine = { OnnxInferenceEngine.shared(app, ModelProfile.ULTRA) },
                 probe = { engine, accelerator -> engine.isAvailable(accelerator) },
             )
 

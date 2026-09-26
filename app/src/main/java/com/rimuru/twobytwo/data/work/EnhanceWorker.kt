@@ -14,8 +14,6 @@ import com.rimuru.twobytwo.R
 import com.rimuru.twobytwo.data.cache.RenderCacheStore
 import com.rimuru.twobytwo.data.device.DeviceTiers
 import com.rimuru.twobytwo.data.history.FileHistoryStore
-import com.rimuru.twobytwo.data.engine.ModelManifest
-import com.rimuru.twobytwo.data.engine.ModelRegistry
 import com.rimuru.twobytwo.data.engine.OnnxInferenceEngine
 import com.rimuru.twobytwo.data.media.MediaStoreImageIo
 import com.rimuru.twobytwo.domain.model.EnhanceResult
@@ -51,13 +49,11 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
     private var notificationChannelReady = false
 
     override suspend fun doWork(): Result {
-        var engine: OnnxInferenceEngine? = null
         var lastBackend = ""
         var last: JobProgress? = null
         var outcomes: CharArray? = null
 
         return runGuarded(
-            close = { engine?.close() },
             onFailure = { error ->
                 failure(
                     terminalFailureText(error),
@@ -72,11 +68,11 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                 ?: return@runGuarded failure("Invalid enhancement request")
             val baseName = inputData.getString(KEY_OUTPUT_NAME) ?: defaultBaseName()
             val tier = DeviceTiers.classify(applicationContext)
-            val registry = ModelRegistry(applicationContext, ModelManifest.BUNDLED)
-            val created = OnnxInferenceEngine(registry)
-            engine = created
-            val configured = created
-                .withProfile(request.modelProfile)
+            // Shared for the life of the process: the 64 MB asset hash and the ORT
+            // graph parse are paid once, not per job. Nothing closes it — the session
+            // is meant to outlive the job, and the process owns it from here.
+            val configured = OnnxInferenceEngine
+                .shared(applicationContext, request.modelProfile)
                 .withAccelerator(request.accelerator)
             lastBackend = configured.backendName
             val batchOutcomes = CharArray(request.inputUris.size) { OUTCOME_QUEUED }
@@ -98,7 +94,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                 configured,
                 MediaStoreImageIo(applicationContext),
                 EnhanceImage.TileConfig(tier.recommendedTileSize),
-                modelProvider = registry,
+                modelProvider = configured.provider,
                 streamingScratchDirectory = applicationContext.cacheDir,
             )
             val flow = useCase.run(
@@ -340,7 +336,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
         }
 
         internal inline fun <T> runGuarded(
-            noinline close: () -> Unit,
+            noinline close: () -> Unit = {},
             onFailure: (Throwable) -> T,
             block: () -> T,
         ): T {
