@@ -48,6 +48,8 @@ internal fun enhanceOutputName(baseName: String, batchIndex: Int, format: Output
 class EnhanceWorker(appContext: Context, params: WorkerParameters) :
     CoroutineWorker(appContext, params) {
 
+    private var notificationChannelReady = false
+
     override suspend fun doWork(): Result {
         var engine: OnnxInferenceEngine? = null
         var lastBackend = ""
@@ -104,6 +106,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                 outputNameFor = { index, _ ->
                     enhanceOutputName(baseName, index, request.exportPolicy.format)
                 },
+                isCancelled = { isStopped },
                 onItemCompleted = { batchIndex, result ->
                     if (result is EnhanceResult.Success) {
                         try {
@@ -133,6 +136,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                 },
             )
 
+            val throttle = ProgressThrottle()
             flow.collect { progress ->
                 last = progress
                 if (progress.itemCompleted && progress.batchIndex in batchOutcomes.indices) {
@@ -144,6 +148,7 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
                 }
                 val reportedBackend = progress.backendUsed?.takeIf { it.isNotBlank() } ?: lastBackend
                 lastBackend = reportedBackend
+                if (!throttle.shouldEmit(progress)) return@collect
                 setProgress(
                     androidx.work.workDataOf(
                         KEY_STEP to progress.step.name,
@@ -230,10 +235,14 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
 
     private fun createForegroundInfo(text: String): ForegroundInfo {
         val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= 26) {
+        // The channel is process-wide and immutable once created; registering it per
+        // progress update was pure waste. The worker instance is per job, so this
+        // still runs once per job rather than once per tile.
+        if (!notificationChannelReady && Build.VERSION.SDK_INT >= 26) {
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, applicationContext.getString(R.string.proc_title), NotificationManager.IMPORTANCE_LOW),
             )
+            notificationChannelReady = true
         }
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
@@ -252,6 +261,39 @@ class EnhanceWorker(appContext: Context, params: WorkerParameters) :
     private fun defaultBaseName(): String {
         val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         return "rimuru2x_$ts"
+    }
+
+    /**
+     * Rate-limits the per-tile progress writes. Every tile emits a JobProgress and
+     * the worker used to turn each one into a setProgress + setForeground pair plus a
+     * fresh NotificationCompat build, so a 12 MP x2 job (~221 tiles) cost ~442 binder
+     * round-trips. Tile progress is still reported often enough to look live, while
+     * step changes, item completion, errors and the final tile always get through.
+     */
+    internal class ProgressThrottle(
+        private val intervalMs: Long = DEFAULT_INTERVAL_MS,
+        private val clock: () -> Long = System::currentTimeMillis,
+    ) {
+        private var lastEmitAt: Long? = null
+        private var lastStep: ProcessStep? = null
+
+        fun shouldEmit(progress: JobProgress): Boolean {
+            val now = clock()
+            val previous = lastEmitAt
+            val dueByClock = previous == null || now - previous >= intervalMs
+            val important = progress.itemCompleted ||
+                progress.error != null ||
+                progress.step != lastStep ||
+                (progress.tilesTotal > 0 && progress.tilesDone >= progress.tilesTotal)
+            if (!dueByClock && !important) return false
+            lastEmitAt = now
+            lastStep = progress.step
+            return true
+        }
+
+        companion object {
+            const val DEFAULT_INTERVAL_MS = 250L
+        }
     }
 
     companion object {
